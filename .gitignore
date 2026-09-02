@@ -1,0 +1,30 @@
+# --- Разработка и работа с агентами (не для студентов, вне git) ---
+/AGENTS.md
+/CLAUDE.md
+/PRACTICES-PROMPT.md
+/rules/
+/docs/process/
+/docs/stand-spec.md
+
+# --- Рабочие артефакты ---
+.vagrant/
+*.retry
+*.log
+
+# Результаты сканов и отчётов (генерируются, не коммитятся; fallback — исключение ниже)
+/scan/reports/
+/tests/reports/
+*.junit.xml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# ОС
+.DS_Store
+
+# Сохранённые заранее результаты демо трекаются намеренно
+!/docs/fallback/
