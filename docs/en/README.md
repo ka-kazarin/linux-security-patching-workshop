@@ -50,7 +50,7 @@ imported and never touches the network. Link to the images: _to be added_.
    `make scan-after` and `make attack`, not from here.
 4. `make scan-after` — vulnerabilities closed.
 5. `make rollout` — roll out to prod with the same playbook.
-6. `make delta` — scan delta, exported for the registry.
+6. `make scan-delta` — scan delta, exported for the registry.
 
 Live exploit and virtual patching: `make attack` → `make waf-on` →
 `make attack` (403) → `make patch-wordpress` (the real fix) → `make waf-off`

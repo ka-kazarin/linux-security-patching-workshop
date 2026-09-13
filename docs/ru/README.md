@@ -49,7 +49,7 @@ vagrant box add bento/oraclelinux-9  /путь/к/скачанному/oraclelin
    а не этот шаг.
 4. `make scan-after` — уязвимости закрыты.
 5. `make rollout` — раскатка на prod тем же плейбуком.
-6. `make delta` — дельта сканов, выгрузка в реестр.
+6. `make scan-delta` — дельта сканов, выгрузка в реестр.
 
 Живой эксплойт и виртуальный патч: `make attack` → `make waf-on` →
 `make attack` (403) → `make patch-wordpress` (настоящий фикс) → `make waf-off`

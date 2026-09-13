@@ -5,7 +5,7 @@ Exercise 1 works even without a stand — on the examples in `scan/examples/`.
 
 ## 1. A vulnerability the OS patch can't reach → a compensating control
 
-Run `make delta` and open `results/delta.html` + `results/delta.csv`. Both
+Run `make scan-delta` and open `results/delta.html` + `results/delta.csv`. Both
 example scans still list `CVE-2026-63030` as `open` — it's an **app-layer**
 finding (layer `app`, owner `dev`, WordPress core), and `apt`/`dnf` never touch
 the application layer, so `make patch` can't close it. A real fix exists
