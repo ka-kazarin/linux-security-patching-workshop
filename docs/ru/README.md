@@ -44,7 +44,9 @@ vagrant box add bento/oraclelinux-9  /путь/к/скачанному/oraclelin
 
 1. `make scan-before` — скан уязвимостей (Trivy, через Ansible на живых VM).
 2. `make patch ENV=stage` — патчинг ОС/middleware через Ansible.
-3. `make verify` — pytest: сервис жив, патч применён, PoC мёртв.
+3. `make verify` — pytest smoke: сервисы живы после патча (ничего не сломали).
+   Доказательство, что CVE *закрыта*, даёт `make scan-after` и `make attack`,
+   а не этот шаг.
 4. `make scan-after` — уязвимости закрыты.
 5. `make rollout` — раскатка на prod тем же плейбуком.
 6. `make delta` — дельта сканов, выгрузка в реестр.
@@ -69,6 +71,6 @@ _ссылка будет добавлена_.
 
 ## Стек
 
-Vagrant · Ansible · Ubuntu 26.04 LTS · Oracle Linux 9.6 · Trivy · OpenSCAP ·
+Vagrant · Ansible · Ubuntu 26.04 LTS · Oracle Linux 9.6 · Trivy ·
 ModSecurity + OWASP CRS · pytest · Prometheus + Grafana · Docker Compose ·
 WordPress (намеренно уязвимый)

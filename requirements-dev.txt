@@ -4,4 +4,3 @@
 pytest>=8.0
 pytest-html>=4.1
 requests>=2.32
-pytest-testinfra>=10.0

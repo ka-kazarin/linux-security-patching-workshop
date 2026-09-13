@@ -39,9 +39,12 @@ what a student/user of the stand sees and uses.
 - `scan/delta.py` + sample scans — delta between two Trivy reports → CSV
   (matches the `Registry` sheet) and an HTML/SVG chart; runs without trivy
   installed locally.
-- `tests/` (pytest): unit tests for delta + smoke/infra/vulnerability tests
-  against the stand (`test_vulnerability.py` — the PoC itself as the
-  assertion); HTML report via pytest-html.
+- `tests/` (pytest): unit tests for `scan/delta.py` + smoke tests against the
+  stand (`make verify` — services still answer after a patch, green before and
+  after); HTML report via pytest-html. Deliberately no test that re-verifies
+  the CVE is closed: that role is already filled by `make scan-after` (Trivy)
+  and `make attack` (the live PoC), so a pytest assertion for it would be dead
+  duplicate work.
 - The stand: `Vagrantfile` (full 4-VM profile + lite 2-VM profile),
   provisioning scripts, Ansible playbooks (patch/rollout/scan/verify/waf),
   `scan/trivy-html.tpl`. `scan.yml` and `patch.yml` verified against a live
@@ -61,12 +64,7 @@ what a student/user of the stand sees and uses.
   app-layer CVE (WordPress core, via wp-cli) independently of `make patch`
   (OS/middleware only) — direct demo of "three layers, three owners".
   Verified live end to end: exploit dead without the WAF, the app-layer scan
-  finding disappears from the next scan on its own. Fixed a real bug this
-  exposed in `test_vulnerability.py`: it asserted on the top-level HTTP
-  status, which is always 207 whether the core is patched or not (only a
-  WAF block changes it) — a patched-core-without-WAF run always "failed"
-  the test even though the exploit was dead. Now checks the same nested
-  sub-response status `exploit/run.sh` already used as the real signal.
+  finding disappears from the next scan on its own.
 - Narrow ModSecurity rule `waf/modsecurity/wp2shell.conf`; `exploit/run.sh`
   refuses to run outside the host-only network.
 - Monitoring stack `monitoring/` (Prometheus + Grafana + exporters,

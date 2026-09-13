@@ -45,7 +45,9 @@ imported and never touches the network. Link to the images: _to be added_.
 1. `make scan-before` — vulnerability scan (Trivy, orchestrated by Ansible
    against the live VMs).
 2. `make patch ENV=stage` — patch OS/middleware via Ansible.
-3. `make verify` — pytest: service alive, patch applied, PoC dead.
+3. `make verify` — pytest smoke: services still alive after the patch (it
+   didn't break anything). Proof the CVE is *closed* comes from
+   `make scan-after` and `make attack`, not from here.
 4. `make scan-after` — vulnerabilities closed.
 5. `make rollout` — roll out to prod with the same playbook.
 6. `make delta` — scan delta, exported for the registry.
@@ -70,6 +72,6 @@ README for the scenario/usage guide. Russian version at
 
 ## Stack
 
-Vagrant · Ansible · Ubuntu 26.04 LTS · Oracle Linux 9.6 · Trivy · OpenSCAP ·
+Vagrant · Ansible · Ubuntu 26.04 LTS · Oracle Linux 9.6 · Trivy ·
 ModSecurity + OWASP CRS · pytest · Prometheus + Grafana · Docker Compose ·
 WordPress (deliberately vulnerable)
