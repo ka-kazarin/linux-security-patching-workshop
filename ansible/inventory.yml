@@ -1,0 +1,47 @@
+# The stand's inventory. stage and prod groups run identical roles and
+# versions; the only differences between environments live here, not in
+# playbook structure (docs/en/README.md). The same playbook that was
+# verified on stage is what rolls out to prod.
+#
+# ansible_ssh_private_key_file — the key Vagrant generates per VM
+# (.vagrant/machines/<node>/virtualbox/private_key). Path is relative to the
+# repo root (that's how the Makefile invokes ansible-playbook). For nodes
+# that aren't up yet (prod under the lite profile), the path doesn't exist —
+# expected, those hosts are simply unreachable right now.
+#
+# IPs must stay in sync with stand/nodes.json (the Vagrantfile's source of
+# truth). This is a static Ansible inventory, not code, so the one
+# duplication is accepted rather than building a generator for it (YAGNI).
+all:
+  vars:
+    ansible_user: vagrant
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+    # auto_silent: still auto-detects the interpreter per host (Ubuntu and
+    # Oracle Linux ship different python3 versions) but without the "future
+    # python install could change this" warning on every single run.
+    ansible_python_interpreter: auto_silent
+  children:
+    web:
+      hosts:
+        web-stage:
+          ansible_host: 192.168.56.10
+          ansible_ssh_private_key_file: stand/.vagrant/machines/web-stage/virtualbox/private_key
+        web-prod:
+          ansible_host: 192.168.56.20
+          ansible_ssh_private_key_file: stand/.vagrant/machines/web-prod/virtualbox/private_key
+    db:
+      hosts:
+        db-stage:
+          ansible_host: 192.168.56.11
+          ansible_ssh_private_key_file: stand/.vagrant/machines/db-stage/virtualbox/private_key
+        db-prod:
+          ansible_host: 192.168.56.21
+          ansible_ssh_private_key_file: stand/.vagrant/machines/db-prod/virtualbox/private_key
+    stage:
+      hosts:
+        web-stage: {}
+        db-stage: {}
+    prod:
+      hosts:
+        web-prod: {}
+        db-prod: {}

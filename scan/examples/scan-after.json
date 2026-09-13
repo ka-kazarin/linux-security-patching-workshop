@@ -1,0 +1,54 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "stand-stage",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "web-stage (ubuntu 26.04)",
+      "Class": "os-pkgs",
+      "Type": "ubuntu",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-27113",
+          "PkgName": "libxml2",
+          "InstalledVersion": "2.13.5-1ubuntu0.1",
+          "FixedVersion": "2.13.6-1ubuntu0.1",
+          "Severity": "MEDIUM",
+          "Title": "libxml2: NULL pointer dereference (pulled in by an updated package)",
+          "PrimaryURL": "https://ubuntu.com/security/CVE-2025-27113"
+        }
+      ]
+    },
+    {
+      "Target": "db-stage (oracle linux 10.1)",
+      "Class": "os-pkgs",
+      "Type": "oracle",
+      "Vulnerabilities": []
+    },
+    {
+      "Target": "wordpress (application)",
+      "Class": "lang-pkgs",
+      "Type": "php-composer",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-63030",
+          "PkgName": "wordpress",
+          "InstalledVersion": "7.0.0",
+          "FixedVersion": "7.0.2",
+          "Severity": "CRITICAL",
+          "Title": "WordPress core: REST batch route confusion enabling pre-auth RCE (wp2shell)",
+          "PrimaryURL": "https://github.com/AdnaneKhan/Wp2Shell-RCE"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-60137",
+          "PkgName": "wordpress",
+          "InstalledVersion": "7.0.0",
+          "FixedVersion": "7.0.2",
+          "Severity": "HIGH",
+          "Title": "WordPress core: WP_Query author__not_in SQL injection",
+          "PrimaryURL": "https://github.com/AdnaneKhan/Wp2Shell-RCE"
+        }
+      ]
+    }
+  ]
+}

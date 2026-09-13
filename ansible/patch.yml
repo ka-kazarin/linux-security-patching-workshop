@@ -1,0 +1,130 @@
+---
+# Patch OS/middleware. Works for both stage and prod via the env variable
+# (make patch ENV=stage|prod). One playbook for both environments — the
+# demo's thesis: prod is rolled out with the exact code verified on stage
+# (docs/en/README.md).
+- name: Patch OS and middleware ({{ env | default('stage') }})
+  hosts: "{{ env | default('stage') }}"
+  become: true
+  tasks:
+    - name: Install unattended-upgrades (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+        update_cache: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    # The stock 50unattended-upgrades ships the BARE "${distro_id}:${distro_codename}"
+    # origin uncommented alongside "-security" — verified live: that means
+    # unattended-upgrade would also install plain, non-security updates, not
+    # just security ones. Override with a strict security-only allowlist
+    # rather than edit the vendor file (survives package upgrades).
+    - name: Restrict unattended-upgrades to security origins only (Debian/Ubuntu)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/51unattended-upgrades-security-only
+        content: |
+          #clear Unattended-Upgrade::Allowed-Origins;
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+              "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+        mode: "0644"
+      when: ansible_facts['os_family'] == "Debian"
+
+    # VMs don't reliably report host power state — the default
+    # OnlyOnACPower check treats a laptop-on-battery host as "on battery"
+    # inside the guest too, silently skipping patching (caught live: a
+    # suspended-then-resumed VM refused to patch with "System is on battery
+    # power, stopping").
+    - name: Don't gate patching on host AC power state (Debian/Ubuntu)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52unattended-upgrades-ignore-power
+        content: |
+          Unattended-Upgrade::OnlyOnACPower "false";
+        mode: "0644"
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Apply security updates only (Debian/Ubuntu, apt -security pocket)
+      ansible.builtin.command: unattended-upgrade -v
+      register: uu_result
+      changed_when: "'Packages that will be upgraded:' in uu_result.stdout and uu_result.stdout.split('Packages that will be upgraded:')[1].split('\\n')[0].strip() != ''"
+      when: ansible_facts['os_family'] == "Debian"
+
+    # dnf's `security: true` module option is a thin, easy-to-misread wrapper
+    # (it still lists name: "*") — spelled out as the plain command Red Hat's
+    # own docs give (access.redhat.com/solutions/10021) so there's no doubt
+    # what's actually being run.
+    - name: Apply security updates only (Oracle Linux, dnf upgrade --security)
+      ansible.builtin.command: dnf upgrade --security -y
+      register: dnf_security
+      changed_when: "'Nothing to do' not in dnf_security.stdout"
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Remove now-unneeded packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        autoremove: true
+        autoclean: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Remove now-unneeded packages (Oracle Linux)
+      ansible.builtin.dnf:
+        autoremove: true
+      when: ansible_facts['os_family'] == "RedHat"
+
+    # Restart services against the libraries we just updated — never the
+    # kernel (that needs a reboot; see reboot-cleanup.yml / `make
+    # patch-reboot` for that half, kept separate since a reboot is
+    # disruptive and shouldn't happen implicitly on every `make patch`).
+    # needrestart does this out of the box on Debian/Ubuntu; RHEL family
+    # only ships needs-restarting, which is report-only (no auto-restart),
+    # so we just surface it.
+    - name: Install needrestart (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: needrestart
+        state: present
+      when: ansible_facts['os_family'] == "Debian"
+
+    # needrestart < 3.8 has known local-root vulnerabilities (CVE-2024-48990,
+    # -48991, -10224, -11003 — see the opennet.ru writeup). Refuse to run an
+    # older build rather than silently trusting it.
+    - name: Check installed needrestart version (Debian/Ubuntu)
+      ansible.builtin.command: dpkg-query -W -f='${Version}' needrestart
+      register: needrestart_version
+      changed_when: false
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Refuse to run needrestart older than 3.8 (known local-root CVEs)
+      ansible.builtin.assert:
+        that: needrestart_version.stdout is version('3.8', '>=')
+        fail_msg: >-
+          needrestart {{ needrestart_version.stdout }} is older than 3.8 —
+          vulnerable to CVE-2024-48990/-48991/-10224/-11003. Refusing to run
+          it; update apt sources to get a patched build.
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Restart services against updated libraries (Debian/Ubuntu, never the kernel)
+      ansible.builtin.command: needrestart -r a -b
+      changed_when: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Install dnf-utils for needs-restarting (Oracle Linux)
+      ansible.builtin.dnf:
+        name: dnf-utils
+        state: present
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Check whether services/kernel need a restart (Oracle Linux, report-only)
+      ansible.builtin.command: dnf needs-restarting -r
+      register: needs_restart
+      failed_when: false
+      changed_when: false
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Show needs-restarting result (Oracle Linux)
+      ansible.builtin.debug:
+        var: needs_restart.stdout_lines
+      when: ansible_facts['os_family'] == "RedHat"
+
+    # TODO: targeted WordPress patch to 7.0.2 (app layer, dev owner), a
+    # minimal-window php-fpm/nginx restart; kernel livepatch as a separate play.

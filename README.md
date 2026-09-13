@@ -1,45 +1,12 @@
-# Vulnerability Management — учебный стенд (Slurm)
+# Vulnerability Management Stand
 
-Стенд к вебинару-интенсиву по управлению уязвимостями (vulnerability management /
-security patching). Полный жизненный цикл — сканирование, приоритизация, патчинг,
-верификация, раскатка — на реальном многослойном стенде из двух дистрибутивов
-(Ubuntu 26.04 + Oracle Linux 10.1).
+A hands-on stand for a vulnerability management / security patching webinar —
+full lifecycle (scan, prioritize, patch, verify, roll out) on a real
+multi-layer lab across Ubuntu 26.04 LTS and Oracle Linux 9.6, orchestrated
+with Vagrant + Ansible + a plain Makefile.
 
-> **Статус:** репозиторий в разработке. Наполнение компонентов идёт по дорожной карте;
-> этот README будет дополняться по мере готовности стенда.
+**→ [Full documentation (English)](docs/en/README.md)**
 
-## ⚠️ Изоляция эксплойтов
+**→ [Полная документация (русский)](docs/ru/README.md)**
 
-Стенд содержит **намеренно уязвимые** сервисы и рабочие эксплойты. Любой PoC
-запускается **только внутри host-only сети стенда**, никогда против внешних систем.
-Подробности и полный дисклеймер — в [`SECURITY.md`](SECURITY.md). Разворачивая стенд,
-вы соглашаетесь с этими условиями.
-
-## С чего начать
-
-```bash
-make help      # брендированная справка по всем командам
-make doctor    # проверка готовности окружения перед запуском
-make up-lite   # облегчённый стенд (2 VM, только staging) — для дома
-make up        # полный стенд (4 VM: staging + prod)
-```
-
-## Порядок демо (кратко)
-
-1. `make scan-before` — скан уязвимостей (Trivy).
-2. `make patch ENV=staging` — патчинг ОС/middleware через Ansible.
-3. `make verify` — pytest: сервис жив, патч применён, PoC мёртв.
-4. `make scan-after` — уязвимости закрыты.
-5. `make rollout` — раскатка на prod тем же плейбуком.
-6. `make delta` — дельта сканов, выгрузка в реестр.
-
-Живой эксплойт и виртуальный патч: `make attack` → `make waf-on` → `make attack` (403).
-
-## Реестр находок (Google Sheets)
-
-Живой реестр уязвимостей ведётся в шаблоне Google Sheets (вне репозитория):
-_ссылка будет добавлена_. Структура шаблона описана в `docs/05-process-policy.md`.
-
-## Документация
-
-Теория и разбор по блокам — в [`docs/`](docs/) (индекс: [`docs/README.md`](docs/README.md)).
+Security disclaimer: [`SECURITY.md`](SECURITY.md).

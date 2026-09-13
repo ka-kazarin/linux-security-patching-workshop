@@ -1,38 +1,37 @@
-# Документация репозитория — индекс
+# Documentation Index
 
-Этот индекс разделяет два разных типа материалов. Путать их нельзя.
+This index separates two different kinds of material. Don't confuse them.
 
-## Документация (поддерживается в актуальном состоянии)
+## Documentation (kept up to date)
 
-Описывает, как всё устроено **сейчас**. Если расходится с историей процесса — **права
-документация**.
+Describes how things work **now**. If it disagrees with the process history
+below, **the documentation wins**.
 
-| Файл | Аудитория | Назначение |
-|------|-----------|------------|
-| [`../README.md`](../README.md) | студент | точка входа: что это, с чего начать, порядок демо |
-| [`../SECURITY.md`](../SECURITY.md) | студент | дисклеймер: эксплойты только в изолированной сети |
-| `01-vuln-sources.md` | студент | теория: откуда берутся уязвимости и патчи |
-| `02-scoring.md` | студент | скоринг и приоритизация (CVSS/EPSS/KEV) |
-| `03-scan-and-patch.md` | студент | инфраструктурный слой |
-| `04-app-layer.md` | студент | слой приложений, dependency scanning |
-| `05-process-policy.md` | студент | процесс, SLA, staging, компенсирующие меры |
-| `06-automation-ai.md` | студент | автоматизация и AI, вал уязвимостей 2026 |
-| `07-integration.md` | студент | стыковка с аудитом, аномалиями, CIS |
-| `fallback/` | ведущий | заранее сохранённые результаты на случай сбоя демо |
+| Path | Audience | Purpose |
+|------|----------|---------|
+| [`../README.md`](../README.md) | student | entry point: what this is, where to start, demo order |
+| [`../SECURITY.md`](../SECURITY.md) | student | disclaimer: exploits run only in the isolated network |
+| [`en/`](en/) | student | scenario description + usage/reproduction guide (English) |
+| [`ru/`](ru/) | student (RU) | the same, in Russian, for the live webinar audience |
+| [`../results/`](../results/) | presenter | scan/patch/verify/attack output — doubles as the pre-captured fallback if a live demo step fails |
 
-Лекции `01..07` — авторский контент Кирилла; агент создаёт только заглушки со
-структурой секций, содержательный текст не генерирует.
+The webinar's theory lives in a separate slide deck, not in this repo. What's
+here is scoped to the stand itself: what each scenario shows and how to run
+and reproduce it. That guide is still to be written (owner's material,
+composed together later) — for now `en/`/`ru/` hold `README.md` (navigation)
+and `exercises.md` (self-study tasks).
 
-## История процесса (пишется на момент итерации, не переписывается)
+## Process history (written at the time, never rewritten afterward)
 
-Отражает состояние на момент, когда была написана. **В git не попадает** (см.
-`rules/git.md`). Если расходится с документацией — права документация.
+Reflects the state at the moment it was written. **Not committed to git** (see
+`rules/git.md`). If it disagrees with the documentation above, **the
+documentation wins**.
 
-| Файл | Назначение |
-|------|------------|
-| `stand-spec.md` | предметная спека стенда: версии, структура, Makefile, демо, acceptance |
-| `process/roadmap.md` | дорожная карта, статус по компонентам |
-| `process/context.md` | append-only лог решений и шагов |
+| Path | Purpose |
+|------|---------|
+| `stand-spec.md` | internal build spec: versions, layout, Makefile, demos, acceptance criteria |
+| `process/roadmap.md` | roadmap, status per component |
+| `process/context.md` | append-only log of decisions and steps |
 
-Управляющие правила разработки — в [`../AGENTS.md`](../AGENTS.md) и
-[`../rules/`](../rules/) (тоже вне git).
+Development/agent rules live in [`../AGENTS.md`](../AGENTS.md) and
+[`../rules/`](../rules/) (also outside git).

@@ -1,0 +1,5 @@
+---
+# Roll out to prod. Deliberately the same playbook as patch.yml: prod gets
+# exactly the code that passed verify on stage (docs/en/README.md).
+# make rollout passes env=prod.
+- import_playbook: patch.yml

@@ -1,0 +1,13 @@
+---
+# A thin wrapper: verification runs via pytest (make verify), not Ansible —
+# the check logic lives in the tests (rules/testing.md). This playbook exists
+# to run verify from the control node in a CI-like scenario.
+- name: Verify patched hosts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Run pytest suite against the stand
+      ansible.builtin.command: python3 -m pytest -m stand
+      changed_when: false
+      # TODO: pass through STAND_URL/TESTINFRA_HOST, collect an HTML report.

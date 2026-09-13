@@ -1,0 +1,159 @@
+---
+# Orchestrates Trivy scanning across the stand's nodes. Report logic lives in
+# Trivy + scan/trivy-html.tpl; Ansible just deploys, runs, and fetches the JSON.
+# Vars: env=stage|prod|all (default stage), out=path without extension
+# (default results/scan-{{ env }}) — .json and .html get appended.
+- name: Reset scan workspace on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # /tmp/stand-scans accumulates one file per host across runs. Without
+    # this reset, a scan scoped to one env (e.g. env=stage) still merges in
+    # stale files a *previous, wider* run (env=all/prod) left behind — the
+    # real cause of "the play only touched stage but the HTML report shows
+    # prod too" (verified live). Each run starts from an empty workspace, so
+    # the merged report only ever contains hosts this run actually scanned.
+    - name: Clear per-host reports left over from a previous run
+      ansible.builtin.file:
+        path: /tmp/stand-scans
+        state: "{{ item }}"
+      loop: [absent, directory]
+
+- name: Scan hosts with Trivy ({{ env | default('stage') }})
+  hosts: "{{ env | default('stage') }}"
+  become: true
+  vars:
+    trivy_bin: /usr/local/bin/trivy
+    remote_report: /tmp/trivy-scan-{{ inventory_hostname }}.json
+    # Override with -e vuln_severities=CRITICAL,HIGH,MEDIUM if you need more —
+    # see the fetch-size-limit note below before adding MEDIUM/LOW on a
+    # fresh image (that's what made this a variable, not a wider default).
+    vuln_severities: "CRITICAL,HIGH"
+  tasks:
+    - name: Check if Trivy is installed
+      ansible.builtin.stat:
+        path: "{{ trivy_bin }}"
+      register: trivy_stat
+
+    - name: Install Trivy (official install script, prebuilt binary)
+      ansible.builtin.shell: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
+          sh -s -- -b /usr/local/bin
+      when: not trivy_stat.stat.exists
+      changed_when: true
+
+    # CRITICAL+HIGH only: MEDIUM produces tens of thousands of findings on a
+    # fresh OS image, and `ansible.builtin.fetch` ships the file back as
+    # base64 inside the module's JSON response — at ~70+MB that blows up with
+    # "No end of json char found". CRITICAL+HIGH is both smaller and more
+    # meaningful for a demo (nobody scrolls through 17k MEDIUM findings on stage).
+    - name: Scan OS packages ({{ vuln_severities }}, no Java DB — not needed for the OS layer)
+      ansible.builtin.command:
+        cmd: >
+          {{ trivy_bin }} rootfs --pkg-types os --scanners vuln
+          --severity {{ vuln_severities }} --format json
+          -o {{ remote_report }} /
+      changed_when: true
+
+    - name: Fetch scan report to controller
+      ansible.builtin.fetch:
+        src: "{{ remote_report }}"
+        dest: /tmp/stand-scans/{{ inventory_hostname }}.json
+        flat: true
+
+    # Trivy's OS scan above never sees WordPress: it's a hand-copied tarball
+    # (web-app.sh), not an OS package, so it's invisible to --pkg-types os
+    # and there's no composer.lock for a lang-pkgs scan either. Without this,
+    # the app layer never shows up in scan-before/after or delta.html at all
+    # (open TODO). Read the installed core version directly and, if it's
+    # still in the wp2shell-vulnerable range, emit one finding in the same
+    # shape Trivy uses — scan/delta.py and trivy-html.tpl already know how
+    # to render a "lang-pkgs" result, no separate pipeline needed.
+    - name: Detect installed WordPress core version (web hosts only)
+      ansible.builtin.command: >-
+        grep -oP "(?<=wp_version = ')[^']+" /var/www/html/wp-includes/version.php
+      register: wp_core_version
+      changed_when: false
+      failed_when: false
+      when: "'web' in group_names"
+
+    - name: Write an app-layer finding for the WordPress core CVE, if still vulnerable
+      ansible.builtin.copy:
+        dest: /tmp/trivy-scan-{{ inventory_hostname }}-app.json
+        content: |
+          {
+            "Results": [{
+              "Target": "{{ inventory_hostname }} (WordPress core)",
+              "Class": "lang-pkgs",
+              "Type": "wordpress",
+              "Vulnerabilities": [{
+                "VulnerabilityID": "CVE-2026-63030",
+                "PkgName": "wordpress-core",
+                "InstalledVersion": "{{ wp_core_version.stdout }}",
+                "FixedVersion": "7.0.2",
+                "Severity": "CRITICAL",
+                "Title": "WordPress REST batch route confusion -> pre-auth SQLi -> RCE (wp2shell)",
+                "PrimaryURL": "https://github.com/AdnaneKhan/Wp2Shell-RCE"
+              }]
+            }]
+          }
+      when:
+        - "'web' in group_names"
+        - wp_core_version.stdout | default('', true) != ''
+        - wp_core_version.stdout is version('7.0.2', '<')
+      changed_when: true
+
+    - name: Fetch the app-layer finding to controller (web hosts only, if written)
+      ansible.builtin.fetch:
+        src: /tmp/trivy-scan-{{ inventory_hostname }}-app.json
+        dest: /tmp/stand-scans/{{ inventory_hostname }}-app.json
+        flat: true
+      when:
+        - "'web' in group_names"
+        - wp_core_version.stdout | default('', true) != ''
+        - wp_core_version.stdout is version('7.0.2', '<')
+
+- name: Merge per-host reports and render HTML (controller-side)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # IMPORTANT: connection: local runs shell/command with cwd = the
+    # playbook file's directory (ansible/), NOT wherever ansible-playbook
+    # was invoked from. Confirmed by experiment — not intuitive, easy to hit
+    # again. Hence every path below is absolute, via playbook_dir plus a walk
+    # up to the repo root (ansible/.. = repo root).
+    repo_root: "{{ playbook_dir }}/.."
+    out_base: "{{ repo_root }}/{{ out | default('results/scan-' + (env | default('stage'))) }}"
+  tasks:
+    - name: Merge Results from all fetched reports into one JSON
+      ansible.builtin.shell: |
+        python3 -c "
+        import json, glob
+        # ArtifactType is required by trivy convert — without it the command
+        # fails with an unrelated-looking error about AWS/Kubernetes reports.
+        merged = {'SchemaVersion': 2, 'ArtifactType': 'filesystem', 'Results': []}
+        for path in sorted(glob.glob('/tmp/stand-scans/*.json')):
+            data = json.load(open(path))
+            merged['Results'].extend(data.get('Results', []))
+        json.dump(merged, open('{{ out_base }}.json', 'w'))
+        print(f\"merged {len(merged['Results'])} target(s)\")
+        "
+      changed_when: true
+      register: merge_result
+
+    - name: Show merge result
+      ansible.builtin.debug:
+        var: merge_result.stdout
+
+    - name: Render HTML report via our template (trivy convert, no re-scan)
+      ansible.builtin.command:
+        cmd: >
+          trivy convert --format template --template @{{ repo_root }}/scan/trivy-html.tpl
+          -o {{ out_base }}.html {{ out_base }}.json
+      changed_when: true
+
+    - name: Report done
+      ansible.builtin.debug:
+        msg: "Done: {{ out_base }}.json / {{ out_base }}.html"

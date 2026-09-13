@@ -1,0 +1,30 @@
+---
+# Patches the app-layer CVE (WordPress core) independently of patch.yml
+# (OS/middleware, infra-owned). Direct illustration of "three layers, three
+# owners" (docs/en/README.md): `make patch` never touches this, only this
+# explicit, dev-owned step does. Fixed version matches the one
+# ansible/scan.yml checks the installed core against for its
+# app-layer finding, so a scan-after run right after this naturally shows
+# the finding closed -- no separate wiring needed.
+- name: Patch WordPress core to the fixed version ({{ env | default('stage') }})
+  hosts: "web-{{ env | default('stage') }}"
+  become: true
+  vars:
+    wp_fixed_version: "7.0.2"
+    wp_root: /var/www/html
+  tasks:
+    # sudo -u directly, not Ansible's own become_user: root -> www-data via
+    # Ansible's become mechanism hits a known ACL/chmod incompatibility on
+    # this box ("chmod: invalid operator ... found A") setting up the
+    # hand-off temp files -- verified live. Same "sudo -u www-data wp ..."
+    # shape web-app.sh already uses for every other wp-cli call, so this
+    # isn't a new pattern.
+    - name: Update WordPress core to the fixed version via wp-cli
+      ansible.builtin.command: >
+        sudo -u www-data wp core update --version={{ wp_fixed_version }} --path={{ wp_root }}
+      register: wp_update
+      changed_when: "'is up to date' not in wp_update.stdout"
+
+    - name: Show wp-cli output
+      ansible.builtin.debug:
+        var: wp_update.stdout_lines

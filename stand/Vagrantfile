@@ -1,0 +1,86 @@
+# -*- mode: ruby -*-
+# The stand: stage + prod, host-only network (exploits stay isolated — SECURITY.md).
+#
+# Profiles:
+#   full (default): 4 VMs — stage pair + prod pair
+#   lite (STAND_PROFILE=lite): 2 VMs — stage only, for weaker hardware
+#
+# Boxes for the target versions (docs/en/README.md): Ubuntu 26.04.1 LTS,
+# Oracle Linux 9.6 — confirmed on HashiCorp Cloud Platform (bento org).
+# Set via ENV with a default. Oracle 9, not the newer 10: Trivy's advisory
+# coverage for OL10 has a real upstream gap right now (0 findings even on a
+# same-day-fresh vuln DB — verified live) that would make the scan demo a
+# dud; a fun fact to mention live, not a workaround to hide
+# (results/README.md has the full story).
+
+require "json"
+
+# Compatibility shim: vagrant-vbguest 0.32.0 (the standard plugin for
+# auto-fixing Guest Additions/VirtualBox version mismatches — see the
+# vboxsf mount failures this works around) calls File.exists?, which Ruby
+# removed. Vagrant 2.4.9 bundles a Ruby new enough that the plugin crashes
+# outright without this. Lives here (not just on one machine) so it travels
+# with the repo regardless of what Ruby version anyone's Vagrant bundles.
+unless File.respond_to?(:exists?)
+  class File
+    def self.exists?(path)
+      exist?(path)
+    end
+  end
+end
+
+UBUNTU_BOX = ENV.fetch("UBUNTU_BOX", "bento/ubuntu-26.04")
+ORACLE_BOX = ENV.fetch("ORACLE_BOX", "bento/oraclelinux-9")
+LITE       = ENV["STAND_PROFILE"] == "lite"
+BOX_FOR    = { "ubuntu" => UBUNTU_BOX, "oracle" => ORACLE_BOX }
+
+# Node topology (IP, box family, provision script) lives in nodes.json — the
+# single source of truth also read by `make urls` (stand/urls.py). Ansible's
+# inventory (ansible/inventory.yml) duplicates the IPs since it's
+# static data, not code (YAGNI: not worth a generator for four lines).
+# Order matters: vagrant up without --parallel brings machines up one at a
+# time, and web-app.sh's provisioning waits for the DB to be ready — so db
+# comes before web (see the key order in nodes.json).
+NODES_RAW = JSON.parse(File.read(File.join(__dir__, "nodes.json")))
+NODES = NODES_RAW.each_with_object({}) do |(name, cfg), acc|
+  acc[name] = [BOX_FOR.fetch(cfg["box"]), cfg["script"], cfg["ip"]]
+end
+NODES.select! { |name, _| name.end_with?("stage") } if LITE
+
+Vagrant.configure("2") do |config|
+  config.vm.synced_folder ".", "/vagrant", disabled: false
+  if Vagrant.has_plugin?("vagrant-vbguest")
+    config.vbguest.auto_update = false
+  end
+
+  # Common provisioning is declared once at the top level — it applies to
+  # every node automatically, no need to repeat it in each node.vm.define block.
+  config.vm.provision "common", type: "shell", path: "provision/common.sh"
+
+  NODES.each do |name, (box, script, ip)|
+    config.vm.define name do |node|
+      node.vm.box = box
+      node.vm.hostname = name
+      # Host-only only: the stand is never exposed externally (exploit isolation).
+      node.vm.network "private_network", ip: ip
+
+      node.vm.provider "virtualbox" do |vb|
+        vb.memory = LITE ? 1536 : 2048
+        vb.cpus = 2
+      end
+
+      node.vm.provision "role", type: "shell",
+        path: "provision/#{script}"
+
+      # The monitoring stack is brought up ahead of time on web-stage
+      # (see the stand's own usage guide). Separate synced_folder: /vagrant only
+      # mounts stand/, and monitoring/ lives one level up in the repo and is
+      # needed by docker-compose inside the VM.
+      if name == "web-stage"
+        node.vm.synced_folder "../monitoring", "/monitoring"
+        node.vm.provision "monitoring", type: "shell",
+          path: "provision/monitoring.sh"
+      end
+    end
+  end
+end

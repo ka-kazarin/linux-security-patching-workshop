@@ -1,0 +1,7 @@
+# Dev/test dependencies. Runtime code (scan/delta.py) needs none of these — it is
+# standard-library only. Install for running the test suite and verify step:
+#   python3 -m pip install -r requirements-dev.txt
+pytest>=8.0
+pytest-html>=4.1
+requests>=2.32
+pytest-testinfra>=10.0

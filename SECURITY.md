@@ -1,33 +1,35 @@
-# Безопасность и условия использования стенда
+# Security and Terms of Use
 
-Этот репозиторий — **учебный стенд**. Он содержит намеренно уязвимые версии ПО и
-рабочие эксплойты (PoC), чтобы показать полный цикл управления уязвимостями. Это делает
-его опасным при неправильном использовании.
+*[Русская версия](docs/ru/security.md)*
 
-## Главное правило: изоляция
+This repository is a **training stand**. It runs intentionally vulnerable
+software and working exploits (PoCs) to demonstrate the full vulnerability
+management lifecycle. That makes it dangerous if misused.
 
-- **Эксплойты и уязвимые сервисы запускаются только внутри host-only сети стенда.**
-  Никогда — против внешних, чужих или продакшн-систем.
-- Стенд не выставляется в интернет и не подключается к сетям, где есть реальные данные
-  или сервисы.
-- `make attack` и любой PoC предполагают, что цель — виртуальная машина этого стенда в
-  изолированной сети, и ничто иное.
+## The main rule: isolation
 
-## Учебный характер
+- **Exploits and vulnerable services run only inside the stand's host-only
+  network.** Never against external, third-party, or production systems.
+- The stand is never exposed to the internet or connected to networks that
+  carry real data or services.
+- `make attack` and any PoC assume the target is a VM of this stand on the
+  isolated network, and nothing else.
 
-- Пароли, ключи и настройки в стенде — **демонстрационные и заведомо небезопасные**. Не
-  переносить их в реальные системы.
-- Числа из демо (время патча, число находок, метрики) иллюстрируют процесс на конкретном
-  прогоне и **не являются бенчмарками**.
-- Стенд — модель для обучения, а не эталон защищённой конфигурации.
+## This is a training model
 
-## Ответственность
+- Passwords, keys, and settings in the stand are **demo-only and
+  intentionally insecure**. Do not carry them over to real systems.
+- Numbers from the demo (patch time, finding counts, metrics) illustrate the
+  process on a specific run and **are not benchmarks**.
+- The stand is a teaching model, not a reference secure configuration.
 
-Разворачивая и запуская стенд, вы берёте на себя ответственность за соблюдение изоляции.
-Авторы не несут ответственности за последствия запуска эксплойтов вне изолированной
-среды стенда.
+## Responsibility
 
-## Сообщить о проблеме
+By standing up and running this lab, you take responsibility for maintaining
+isolation. The authors are not responsible for the consequences of running
+exploits outside the stand's isolated environment.
 
-Нашли проблему в самих материалах стенда (не в намеренно заложенной уязвимости) —
-опишите её через issue в репозитории.
+## Reporting an issue
+
+Found a problem in the stand's own materials (not the intentionally planted
+vulnerability) — describe it via a repository issue.

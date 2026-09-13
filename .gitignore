@@ -1,17 +1,18 @@
-# --- Разработка и работа с агентами (не для студентов, вне git) ---
+# --- Development and agent working files (not for students, kept out of git) ---
 /AGENTS.md
 /CLAUDE.md
 /PRACTICES-PROMPT.md
 /rules/
 /docs/process/
 /docs/stand-spec.md
+/.claude/
 
-# --- Рабочие артефакты ---
+# --- Working artifacts ---
 .vagrant/
 *.retry
 *.log
 
-# Результаты сканов и отчётов (генерируются, не коммитятся; fallback — исключение ниже)
+# Scan and report output (generated, not committed; fallback is the exception below)
 /scan/reports/
 /tests/reports/
 *.junit.xml
@@ -23,8 +24,11 @@ __pycache__/
 .venv/
 venv/
 
-# ОС
+# OS
 .DS_Store
 
-# Сохранённые заранее результаты демо трекаются намеренно
-!/docs/fallback/
+# Pre-captured demo results are tracked on purpose
+!/results/
+manual-test*
+tests-feedback*
+presentation-plan-initial_from-claude.md

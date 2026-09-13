@@ -1,0 +1,91 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "stand-stage",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "web-stage (ubuntu 26.04)",
+      "Class": "os-pkgs",
+      "Type": "ubuntu",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-23419",
+          "PkgName": "nginx",
+          "InstalledVersion": "1.28.0-1",
+          "FixedVersion": "1.28.0-2ubuntu0.1",
+          "Severity": "HIGH",
+          "Title": "nginx: TLS session resumption client authentication bypass",
+          "PrimaryURL": "https://ubuntu.com/security/CVE-2025-23419"
+        },
+        {
+          "VulnerabilityID": "CVE-2024-13176",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.4.0-1",
+          "FixedVersion": "3.4.1-1ubuntu0.1",
+          "Severity": "MEDIUM",
+          "Title": "openssl: timing side-channel in ECDSA signature computation",
+          "PrimaryURL": "https://ubuntu.com/security/CVE-2024-13176"
+        },
+        {
+          "VulnerabilityID": "CVE-2025-1219",
+          "PkgName": "php8.4-fpm",
+          "InstalledVersion": "8.4.3-1",
+          "FixedVersion": "8.4.4-1ubuntu0.1",
+          "Severity": "MEDIUM",
+          "Title": "php: incorrect content-type handling in streams wrapper",
+          "PrimaryURL": "https://ubuntu.com/security/CVE-2025-1219"
+        }
+      ]
+    },
+    {
+      "Target": "db-stage (oracle linux 10.1)",
+      "Class": "os-pkgs",
+      "Type": "oracle",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-21490",
+          "PkgName": "mysql-server",
+          "InstalledVersion": "8.4.3-1.el10",
+          "FixedVersion": "8.4.4-1.el10",
+          "Severity": "HIGH",
+          "Title": "mysql: server optimizer unauthorized data access",
+          "PrimaryURL": "https://linux.oracle.com/cve/CVE-2025-21490.html"
+        },
+        {
+          "VulnerabilityID": "CVE-2024-9143",
+          "PkgName": "openssl",
+          "InstalledVersion": "3.2.2-1.el10",
+          "FixedVersion": "3.2.2-2.el10",
+          "Severity": "LOW",
+          "Title": "openssl: out-of-bounds read in GF(2^m) curves",
+          "PrimaryURL": "https://linux.oracle.com/cve/CVE-2024-9143.html"
+        }
+      ]
+    },
+    {
+      "Target": "wordpress (application)",
+      "Class": "lang-pkgs",
+      "Type": "php-composer",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-63030",
+          "PkgName": "wordpress",
+          "InstalledVersion": "7.0.0",
+          "FixedVersion": "7.0.2",
+          "Severity": "CRITICAL",
+          "Title": "WordPress core: REST batch route confusion enabling pre-auth RCE (wp2shell)",
+          "PrimaryURL": "https://github.com/AdnaneKhan/Wp2Shell-RCE"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-60137",
+          "PkgName": "wordpress",
+          "InstalledVersion": "7.0.0",
+          "FixedVersion": "7.0.2",
+          "Severity": "HIGH",
+          "Title": "WordPress core: WP_Query author__not_in SQL injection",
+          "PrimaryURL": "https://github.com/AdnaneKhan/Wp2Shell-RCE"
+        }
+      ]
+    }
+  ]
+}

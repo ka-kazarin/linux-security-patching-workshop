@@ -1,4 +1,4 @@
-# Append-only логи: union-merge, чтобы параллельные ветки не конфликтовали.
-# (docs/process/ вне git, но правило остаётся на случай локального версионирования
-#  процессных файлов в отдельной ветке/форке.)
+# Append-only logs: union merge so parallel branches never conflict.
+# (docs/process/ is outside git, but the rule stays in place in case the
+#  process files ever get locally versioned in a separate branch/fork.)
 docs/process/context.md merge=union

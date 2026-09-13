@@ -1,0 +1,202 @@
+---
+# Optional follow-up to patch.yml. apt/dnf refuse to remove a kernel package
+# that's still running, so patch.yml's autoremove is a no-op for the OLD
+# kernel — the new one is installed but not booted, and a scan right after
+# patch.yml still finds the old (vulnerable) kernel package on disk. That's
+# a real false positive, not a Trivy bug: reboot into the new kernel, THEN
+# autoremove can actually purge the old one.
+#
+# autoremove alone still isn't enough on Ubuntu: apt's own
+# 01autoremove-kernels policy deliberately keeps the running kernel plus one
+# fallback, so the previous kernel survives autoremove by design (verified
+# live — a false-positive-free scan needs exactly one kernel on disk for a
+# clean before/after story). Purge it explicitly instead of relying on a
+# policy built to keep it around.
+#
+# Kept as a separate play, not folded into patch.yml: a reboot is disruptive
+# and shouldn't happen implicitly on every `make patch` run.
+- name: Reboot and clean up old kernel packages ({{ env | default('stage') }})
+  hosts: "{{ env | default('stage') }}"
+  become: true
+  tasks:
+    - name: Reboot
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+
+    # Ansible gathers facts ONCE at play start, before this play's own Reboot
+    # task runs -- ansible_facts['kernel'] is the PRE-reboot value for the
+    # rest of the play, it does not refresh itself just because the host
+    # rebooted. Verified live the hard way: the purge task below used to key
+    # off ansible_facts['kernel'] and deleted the NEW kernel instead of the
+    # old one (stale fact said the old kernel was "running"), leaving the
+    # host on the older, more-vulnerable kernel with a higher CVE count than
+    # before. Query it fresh, after the reboot, every time.
+    - name: Capture the kernel actually running after reboot
+      ansible.builtin.command: uname -r
+      register: running_kernel
+      changed_when: false
+
+    - name: Remove now-unused packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        autoremove: true
+        autoclean: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Remove now-unused packages (Oracle Linux)
+      ansible.builtin.dnf:
+        autoremove: true
+      when: ansible_facts['os_family'] == "RedHat"
+
+    # linux-image-* alone is not the full picture, verified live: this
+    # Ubuntu build also splits kernel MODULES into their own per-version
+    # packages (linux-modules-<ver>-generic, linux-main-modules-zfs-<ver>-
+    # generic, linux-tools-<ver>, ...), none of which are named
+    # "linux-image-*" and none of which autoremove touched (not flagged
+    # auto-installed) -- one of them (linux-modules-7.0.0-22-generic) still
+    # carried a live CRITICAL CVE well after "cleanup", and removing it
+    # dropped CRITICAL 67->16 / HIGH 1094->344 on its own. Cast the net over
+    # every "linux-*" package instead of guessing prefixes one family at a
+    # time: anything shaped like a kernel version tag belongs to some
+    # specific kernel build and should go if that build isn't the one
+    # running.
+    - name: List every "linux-*" package carrying a kernel version tag (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        dpkg-query -W -f='${Package}\n' 'linux-*' | grep -E '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+(-generic)?'
+      register: deb_kernel_pkgs
+      changed_when: false
+      failed_when: false
+      when: ansible_facts['os_family'] == "Debian"
+
+    # dpkg's version-comparison algorithm (not a plain `sort -V` on the
+    # version substring) -- verified live that a naive sort -V can rank two
+    # real kernel version strings the wrong way round when their segment
+    # counts differ, which would make this safety check pass when it
+    # shouldn't. dpkg --compare-versions is the same logic dpkg itself uses
+    # to decide package ordering.
+    - name: Determine the highest-versioned installed kernel (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        best=""
+        for pkg in $(dpkg-query -W -f='${Package}\n' 'linux-image-*' | grep -E '^linux-image-(unsigned-)?[0-9]'); do
+          ver="${pkg#linux-image-}"
+          ver="${ver#unsigned-}"
+          if [ -z "$best" ] || dpkg --compare-versions "$ver" gt "$best"; then
+            best="$ver"
+          fi
+        done
+        echo "$best"
+      register: deb_highest_kernel
+      changed_when: false
+      when: ansible_facts['os_family'] == "Debian"
+
+    # Refuse to touch anything if the reboot didn't land on the newest
+    # installed kernel (a misconfigured GRUB default, held-back grub-pc,
+    # etc.) -- purging in that state would delete the newer kernel and make
+    # the vulnerability count go UP, exactly the live failure above.
+    - name: Refuse to purge unless the running kernel is the newest installed one (Debian/Ubuntu)
+      ansible.builtin.assert:
+        that: running_kernel.stdout == deb_highest_kernel.stdout
+        fail_msg: >-
+          Running kernel ({{ running_kernel.stdout }}) is not the highest
+          installed one ({{ deb_highest_kernel.stdout }}) -- the reboot did
+          not boot the newest kernel. Refusing to purge any kernel package:
+          that would delete the newer one and leave the host on the older,
+          more vulnerable kernel. Check the GRUB default entry manually
+          before re-running patch-reboot.
+      when: ansible_facts['os_family'] == "Debian"
+
+    # Match concrete versioned images ("linux-image-7.0.0-31-generic" and its
+    # "linux-image-unsigned-7.0.0-31-generic" sibling -- the actual kernel
+    # data on this Ubuntu build lives in the unsigned package, the signed one
+    # is a thin wrapper that depends on it, and purging the wrapper alone
+    # does NOT cascade-remove the unsigned sibling, verified live: it stayed
+    # "installed" and its vmlinuz/System.map files kept cluttering /boot).
+    # Never the "linux-image-generic" metapackage — purging that would stop
+    # future patches from pulling a new kernel in at all.
+    # Known, harmless leftover on this box (verified live): the old
+    # version's thin signed wrapper (e.g. linux-image-7.0.0-22-generic) can
+    # come right back after this purges its unsigned sibling, because it
+    # also happens to Provide the virtual package "virtualbox-guest-modules"
+    # that something on the box depends on -- apt's own solver reinstalls it
+    # to keep that satisfied. Left alone rather than fought: it's a tiny
+    # metadata-only package (no real kernel payload -- that's the unsigned
+    # sibling, which DOES get purged) and confirmed live with a real Trivy
+    # scan that it does not register as a vulnerability finding either way.
+    - name: Purge every kernel-version-tagged package other than the one now running (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: absent
+        purge: true
+      loop: "{{ deb_kernel_pkgs.stdout_lines | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - running_kernel.stdout not in item
+
+    # Same broadening as the Debian side: not just the "kernel" package
+    # itself, but any kernel-version-tagged sibling (kernel-core,
+    # kernel-modules, kernel-modules-extra, ...) for a non-running version.
+    - name: List every kernel-version-tagged package (Oracle Linux)
+      ansible.builtin.shell: |
+        set -o pipefail
+        rpm -qa 'kernel*' | grep -E '[0-9]+\.[0-9]+\.[0-9]+-[0-9]'
+      register: rh_kernel_pkgs
+      changed_when: false
+      failed_when: false
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Determine the highest-versioned installed kernel (Oracle Linux)
+      ansible.builtin.shell: |
+        set -o pipefail
+        rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V | tail -1
+      register: rh_highest_kernel
+      changed_when: false
+      failed_when: false
+      when: ansible_facts['os_family'] == "RedHat"
+
+    # Live-caught, unrelated to the Debian bug above: db-stage's `kernel`
+    # package (rpm -q kernel) and the kernel `uname -r` reports can simply be
+    # two different builds -- the box's baseline kernel isn't always the one
+    # dnf's package database tracks. Purging the one-and-only rpm-tracked
+    # entry in that state would still be a real "remove the only kernel rpm
+    # knows about" mistake, so the assert treats "running == highest" and
+    # "running not found among rpm's kernel packages at all" the same way:
+    # stop, don't guess.
+    - name: Refuse to purge unless the running kernel is the newest installed one (Oracle Linux)
+      ansible.builtin.assert:
+        that: running_kernel.stdout == rh_highest_kernel.stdout
+        fail_msg: >-
+          Running kernel ({{ running_kernel.stdout }}) does not match what
+          rpm considers the newest installed kernel package
+          ({{ rh_highest_kernel.stdout }}). Either the reboot didn't land on
+          the newest installed kernel, or the running kernel isn't a
+          dnf/rpm-tracked package at all (seen live on this box's baseline
+          image). Refusing to purge any kernel package either way -- look at
+          `rpm -q kernel` and `uname -r` on the host before re-running
+          patch-reboot.
+      when:
+        - ansible_facts['os_family'] == "RedHat"
+        - rh_highest_kernel.stdout | default('') != ''
+
+    - name: Purge kernel packages other than the one now running (Oracle Linux)
+      ansible.builtin.dnf:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ rh_kernel_pkgs.stdout_lines | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "RedHat"
+        - running_kernel.stdout not in item
+
+    # A final sweep: purging the versioned image package can orphan its
+    # matching linux-modules-*/linux-headers-* siblings, which the earlier
+    # autoremove pass (run before the purge) couldn't have known to remove.
+    - name: Sweep any packages orphaned by the kernel purge (Debian/Ubuntu)
+      ansible.builtin.apt:
+        autoremove: true
+        autoclean: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Sweep any packages orphaned by the kernel purge (Oracle Linux)
+      ansible.builtin.dnf:
+        autoremove: true
+      when: ansible_facts['os_family'] == "RedHat"

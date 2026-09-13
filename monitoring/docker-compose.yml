@@ -1,0 +1,40 @@
+# Monitoring stack for the livepatch demo. Brought up ahead of time.
+# Image tags are pinned (rules/configs.md), configs are mounted read-only,
+# dashboards and datasources are provisioned from files, no manual UI state.
+name: secpatch-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    ports: ["3000:3000"]
+    environment:
+      # Demo stand: anonymous access so nobody has to log in during the webinar. Not for prod.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  node_exporter:
+    image: prom/node-exporter:v1.9.0
+    ports: ["9100:9100"]
+    # Node metrics (kernel uptime, load) for the livepatch panel.
+
+  blackbox_exporter:
+    image: prom/blackbox-exporter:v0.26.0
+    ports: ["9115:9115"]
+    # External availability probe — a flat line during livepatch.

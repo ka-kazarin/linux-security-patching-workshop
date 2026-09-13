@@ -1,0 +1,30 @@
+---
+# Virtual patch: toggle a narrow ModSecurity rule for wp2shell
+# (make waf-on / make waf-off, state=on|off). The rule is narrow — scoped to
+# one CVE, not "block everything" (see waf/modsecurity/).
+- name: Toggle ModSecurity virtual patch (state={{ state | default('on') }})
+  hosts: "web-{{ env | default('stage') }}"
+  become: true
+  tasks:
+    - name: Install narrow CVE rule
+      ansible.builtin.copy:
+        src: ../waf/modsecurity/wp2shell.conf
+        dest: /etc/modsecurity/rules/wp2shell.conf
+      when: (state | default('on')) == "on"
+      notify: restart nginx
+
+    - name: Remove narrow CVE rule
+      ansible.builtin.file:
+        path: /etc/modsecurity/rules/wp2shell.conf
+        state: absent
+      when: (state | default('on')) == "off"
+      notify: restart nginx
+
+  handlers:
+    # A graceful reload does NOT reliably pick up ModSecurity rule file
+    # changes (verified live: reload kept serving the old ruleset, a full
+    # restart was required) — so this restarts nginx, not reloads it.
+    - name: restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
