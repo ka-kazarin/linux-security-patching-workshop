@@ -38,9 +38,11 @@ scrape_configs:
       - targets: ["http://192.168.56.10"]
         labels:
           instance: "web-stage"
+          service: "nginx"
       - targets: ["http://192.168.56.20"]
         labels:
           instance: "web-prod"
+          service: "nginx"
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -57,9 +59,11 @@ scrape_configs:
       - targets: ["192.168.56.11:3306"]
         labels:
           instance: "db-stage"
+          service: "mysql"
       - targets: ["192.168.56.21:3306"]
         labels:
           instance: "db-prod"
+          service: "mysql"
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

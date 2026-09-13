@@ -24,14 +24,7 @@
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 5 },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 1 }
-            ]
-          },
+          "color": { "mode": "fixed", "fixedColor": "green" },
           "mappings": [
             {
               "type": "value",
@@ -52,7 +45,7 @@
         "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" }
       },
       "targets": [
-        { "expr": "probe_success", "legendFormat": "{{instance}}" }
+        { "expr": "probe_success", "legendFormat": "{{service}} ({{instance}})" }
       ]
     },
     {
