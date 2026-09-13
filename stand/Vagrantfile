@@ -2,8 +2,8 @@
 # The stand: stage + prod, host-only network (exploits stay isolated — SECURITY.md).
 #
 # Profiles:
-#   full (default): 4 VMs — stage pair + prod pair
-#   lite (STAND_PROFILE=lite): 2 VMs — stage only, for weaker hardware
+#   full (default): 5 VMs — stage pair + prod pair + mon
+#   lite (STAND_PROFILE=lite): 3 VMs — stage pair + mon, for weaker hardware
 #
 # Boxes for the target versions (docs/en/README.md): Ubuntu 26.04.1 LTS,
 # Oracle Linux 9.6 — confirmed on HashiCorp Cloud Platform (bento org).
@@ -14,6 +14,7 @@
 # (results/README.md has the full story).
 
 require "json"
+require "fileutils"
 
 # Compatibility shim: vagrant-vbguest 0.32.0 (the standard plugin for
 # auto-fixing Guest Additions/VirtualBox version mismatches — see the
@@ -31,7 +32,26 @@ end
 
 UBUNTU_BOX = ENV.fetch("UBUNTU_BOX", "bento/ubuntu-26.04")
 ORACLE_BOX = ENV.fetch("ORACLE_BOX", "bento/oraclelinux-9")
-LITE       = ENV["STAND_PROFILE"] == "lite"
+
+# Persist the chosen profile so a later bare `vagrant provision`/`reload` (no
+# STAND_PROFILE in the env) keeps the profile the stand was brought up with,
+# instead of silently reverting to full. That mattered live: a bare
+# `vagrant provision mon` regenerated mon's prometheus.yml for the full
+# topology, adding prod targets that aren't up under lite (perpetually DOWN,
+# and their stale series linger on the Grafana dashboard). Explicit
+# STAND_PROFILE always wins and refreshes the marker; the marker (in
+# .vagrant/, gitignored per-checkout runtime state) is the fallback.
+PROFILE_MARKER = File.join(__dir__, ".vagrant", "stand_profile")
+if ENV.key?("STAND_PROFILE")
+  profile = ENV["STAND_PROFILE"]
+  FileUtils.mkdir_p(File.dirname(PROFILE_MARKER))
+  File.write(PROFILE_MARKER, profile)
+elsif File.exist?(PROFILE_MARKER)
+  profile = File.read(PROFILE_MARKER).strip
+else
+  profile = "full"
+end
+LITE = profile == "lite"
 BOX_FOR    = { "ubuntu" => UBUNTU_BOX, "oracle" => ORACLE_BOX }
 
 # Node topology (IP, box family, provision script) lives in nodes.json — the
@@ -45,7 +65,17 @@ NODES_RAW = JSON.parse(File.read(File.join(__dir__, "nodes.json")))
 NODES = NODES_RAW.each_with_object({}) do |(name, cfg), acc|
   acc[name] = [BOX_FOR.fetch(cfg["box"]), cfg["script"], cfg["ip"]]
 end
-NODES.select! { |name, _| name.end_with?("stage") } if LITE
+NODES.select! { |name, _| name.end_with?("stage") || name == "mon" } if LITE
+
+# Active nodes as "name=ip" pairs, grouped for the monitoring stack (mon's
+# provisioner generates prometheus.yml from exactly what's up in this
+# profile — no static prod targets stuck DOWN forever under lite). The name
+# becomes the Prometheus instance label (human-readable legends in Grafana,
+# not raw IPs). nodes.json stays the single source of truth; this just
+# re-slices the already-filtered NODES.
+NODE_TARGETS = NODES.map { |name, (_, _, ip)| "#{name}=#{ip}" }.join(" ")
+WEB_TARGETS  = NODES.select { |name, _| name.start_with?("web-") }.map { |name, (_, _, ip)| "#{name}=#{ip}" }.join(" ")
+DB_TARGETS   = NODES.select { |name, _| name.start_with?("db-") }.map { |name, (_, _, ip)| "#{name}=#{ip}" }.join(" ")
 
 Vagrant.configure("2") do |config|
   config.vm.synced_folder ".", "/vagrant", disabled: false
@@ -65,21 +95,30 @@ Vagrant.configure("2") do |config|
       node.vm.network "private_network", ip: ip
 
       node.vm.provider "virtualbox" do |vb|
-        vb.memory = LITE ? 1536 : 2048
+        # mon only runs Prometheus/Grafana/blackbox containers, not a full
+        # app+DB stack — lighter than a web/db node either profile uses.
+        vb.memory = name == "mon" ? 1024 : (LITE ? 1536 : 2048)
         vb.cpus = 2
       end
 
-      node.vm.provision "role", type: "shell",
-        path: "provision/#{script}"
-
-      # The monitoring stack is brought up ahead of time on web-stage
-      # (see the stand's own usage guide). Separate synced_folder: /vagrant only
-      # mounts stand/, and monitoring/ lives one level up in the repo and is
-      # needed by docker-compose inside the VM.
-      if name == "web-stage"
+      # mon's role script (monitoring.sh) IS the monitoring stack — no
+      # separate provisioner on top (that used to be a bonus step tacked
+      # onto web-stage's own web-app.sh role; mon has no other role). It
+      # just needs two things the generic path doesn't give every node:
+      # the ../monitoring synced_folder (/vagrant only mounts stand/, and
+      # monitoring/ lives one level up, needed by docker-compose inside the
+      # VM) and the active-node target list so it can generate
+      # prometheus.yml for exactly what's up in this profile. mon is last
+      # in nodes.json so Prometheus's first scrape already sees the web/db
+      # nodes up.
+      if name == "mon"
         node.vm.synced_folder "../monitoring", "/monitoring"
-        node.vm.provision "monitoring", type: "shell",
-          path: "provision/monitoring.sh"
+        node.vm.provision "role", type: "shell",
+          path: "provision/#{script}",
+          env: { "NODE_TARGETS" => NODE_TARGETS, "WEB_TARGETS" => WEB_TARGETS, "DB_TARGETS" => DB_TARGETS }
+      else
+        node.vm.provision "role", type: "shell",
+          path: "provision/#{script}"
       end
     end
   end

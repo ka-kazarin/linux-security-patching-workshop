@@ -45,7 +45,7 @@ what a student/user of the stand sees and uses.
   the CVE is closed: that role is already filled by `make scan-after` (Trivy)
   and `make attack` (the live PoC), so a pytest assertion for it would be dead
   duplicate work.
-- The stand: `Vagrantfile` (full 4-VM profile + lite 2-VM profile),
+- The stand: `Vagrantfile` (full 5-VM profile + lite 3-VM profile),
   provisioning scripts, Ansible playbooks (patch/rollout/scan/verify/waf),
   `scan/trivy-html.tpl`. `scan.yml` and `patch.yml` verified against a live
   stand end to end. `scan.yml` now also reports the WordPress core CVE as an
@@ -67,8 +67,20 @@ what a student/user of the stand sees and uses.
   finding disappears from the next scan on its own.
 - Narrow ModSecurity rule `waf/modsecurity/wp2shell.conf`; `exploit/run.sh`
   refuses to run outside the host-only network.
-- Monitoring stack `monitoring/` (Prometheus + Grafana + exporters,
-  provisioned from files, livepatch dashboard).
+- Monitoring stack `monitoring/` (Prometheus + Grafana + blackbox_exporter,
+  provisioned from files) on its own `mon` node (192.168.56.30), up in both
+  profiles. `node_exporter` runs natively on every node (web/db/mon, Ubuntu
+  and Oracle Linux alike — `stand/provision/common.sh`) instead of as a
+  single container, so kernel uptime is real per-host data. Prometheus's
+  scrape config is generated at provision time from `nodes.json`'s active
+  node set for the current profile, so `STAND_PROFILE=lite` never carries
+  static targets for prod hosts that aren't up; the chosen profile is
+  persisted so a later bare `vagrant provision`/`reload` keeps it instead of
+  reverting to full. Every target (node and blackbox alike) is labelled with
+  its node name, so Grafana legends read "web-stage", not an IP. Dashboard:
+  "Service continuity" (`continuity.json`) — a state timeline of
+  `probe_success` per probed service (HTTP on web nodes, TCP on db nodes) and
+  a kernel-uptime panel per node.
 - `docs/en/exercises.md` / `docs/ru/exercises.md` (4 exercises). Webinar
   theory lives in a separate slide deck, not this repo — `docs/{en,ru}/`
   hold the stand's own scenario/usage guide instead (in progress).

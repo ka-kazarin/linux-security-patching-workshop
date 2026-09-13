@@ -1,0 +1,75 @@
+{
+  "title": "Service continuity",
+  "uid": "continuity",
+  "schemaVersion": 39,
+  "tags": ["stand", "continuity"],
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "What this dashboard shows",
+      "type": "text",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Service availability** — one row per probed target (`probe_success` from blackbox_exporter: HTTP checks on every web node, TCP checks on MySQL for every db node). Green = up, red = down. A `systemctl restart nginx`/`mysqld` or a full VM reboot shows up here as a visible red stripe, not just a number that briefly dips.\n\n**Kernel uptime** — `time() - node_boot_time_seconds` per node (`node_exporter`, running natively on every node — web/db/mon, Ubuntu and Oracle Linux alike). Resets to 0 only on an actual reboot; a patched-but-not-rebooted kernel package does not move this. Together the two panels separate two different claims: \"the service kept answering\" vs. \"the host didn't reboot\" — a normal `make patch` run should hold the top panel flat while `make patch-reboot` is what resets the bottom one."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Service availability",
+      "description": "probe_success per blackbox target. 1 = up (green), 0 = down (red). Restart or reboot a service and watch this row turn red.",
+      "type": "state-timeline",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN", "index": 0 },
+                "1": { "text": "UP", "index": 1 }
+              }
+            }
+          ],
+          "custom": { "lineWidth": 0, "fillOpacity": 100 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "rowHeight": 0.9
+      },
+      "targets": [
+        { "expr": "probe_success", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Kernel uptime",
+      "description": "time() - node_boot_time_seconds per node. Only resets on an actual reboot (make patch-reboot) — a patched-but-not-rebooted kernel package does not move this.",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "time() - node_boot_time_seconds", "legendFormat": "{{instance}}" }
+      ]
+    }
+  ]
+}

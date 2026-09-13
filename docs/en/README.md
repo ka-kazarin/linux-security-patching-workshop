@@ -22,8 +22,8 @@ Standing the lab up means you agree to these terms.
 ```bash
 make help      # branded help for every command
 make doctor    # checks your environment is ready
-make up-lite   # lightweight stand (2 VMs, stage only) — for home use
-make up        # full stand (4 VMs: stage + prod)
+make up-lite   # lightweight stand (3 VMs: stage + mon) — for home use
+make up        # full stand (5 VMs: stage + prod + mon)
 ```
 
 By default `vagrant up` fetches the base images (`bento/ubuntu-26.04`,

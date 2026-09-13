@@ -1,24 +1,67 @@
-# Prometheus scrape config for the stand. Check metric names against the
-# real exporters (rules/configs.md) — no dead panels allowed.
+# Checked-in reference example, matching the full profile's topology
+# (nodes.json). The REAL config the stand runs is regenerated per-profile at
+# provision time by stand/provision/monitoring.sh (into /opt/monitoring on
+# the mon node, not back into this file) — that's how prod targets never
+# show up as static (and permanently DOWN) under STAND_PROFILE=lite. Check
+# metric names against the real exporters (rules/configs.md) — no dead
+# panels allowed.
 global:
-  scrape_interval: 5s          # frequent interval: the livepatch line needs to be detailed
+  scrape_interval: 5s
 
 scrape_configs:
   - job_name: node
     static_configs:
-      - targets: ["node_exporter:9100"]
+      - targets: ["192.168.56.10:9100"]
+        labels:
+          instance: "web-stage"
+      - targets: ["192.168.56.11:9100"]
+        labels:
+          instance: "db-stage"
+      - targets: ["192.168.56.20:9100"]
+        labels:
+          instance: "web-prod"
+      - targets: ["192.168.56.21:9100"]
+        labels:
+          instance: "db-prod"
+      - targets: ["192.168.56.30:9100"]
+        labels:
+          instance: "mon"
 
   - job_name: blackbox-http
     metrics_path: /probe
     params:
       module: [http_2xx]
     static_configs:
-      # Availability of the stand's web node (probed via blackbox_exporter).
+      # Availability of every web node (probed via blackbox_exporter). The
+      # instance label is the node name, not the probed URL, so Grafana panels
+      # read "web-stage" like the node job — __param_target carries the URL.
       - targets: ["http://192.168.56.10"]
+        labels:
+          instance: "web-stage"
+      - targets: ["http://192.168.56.20"]
+        labels:
+          instance: "web-prod"
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
+      - target_label: __address__
+        replacement: blackbox_exporter:9115
+
+  - job_name: blackbox-tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      # MySQL reachability on every db node (module ships in blackbox_exporter's
+      # own default config, no custom blackbox.yml needed).
+      - targets: ["192.168.56.11:3306"]
+        labels:
+          instance: "db-stage"
+      - targets: ["192.168.56.21:3306"]
+        labels:
+          instance: "db-prod"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
       - target_label: __address__
         replacement: blackbox_exporter:9115

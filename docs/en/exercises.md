@@ -1,6 +1,6 @@
 # Self-Study Exercises
 
-Reproducible on the lightweight stand: `make up-lite` (2 VMs, stage only).
+Reproducible on the lightweight stand: `make up-lite` (3 VMs: stage + mon).
 Exercise 1 works even without a stand — on the examples in `scan/examples/`.
 
 ## 1. A vulnerability the OS patch can't reach → a compensating control

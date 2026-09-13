@@ -1,6 +1,12 @@
-# Monitoring stack for the livepatch demo. Brought up ahead of time.
-# Image tags are pinned (rules/configs.md), configs are mounted read-only,
-# dashboards and datasources are provisioned from files, no manual UI state.
+# Monitoring stack for the service-continuity demo. Runs on its own `mon`
+# node, brought up ahead of time. Image tags are pinned (rules/configs.md),
+# configs are mounted read-only, dashboards and datasources are provisioned
+# from files, no manual UI state.
+#
+# node_exporter is NOT here: it runs natively on every stand node (web/db/
+# mon, Ubuntu and Oracle Linux — see stand/provision/common.sh) so Prometheus
+# gets real per-host kernel uptime instead of only ever seeing this one
+# container's host.
 name: secpatch-monitoring
 
 services:
@@ -29,12 +35,11 @@ services:
       prometheus:
         condition: service_healthy
 
-  node_exporter:
-    image: prom/node-exporter:v1.9.0
-    ports: ["9100:9100"]
-    # Node metrics (kernel uptime, load) for the livepatch panel.
-
   blackbox_exporter:
     image: prom/blackbox-exporter:v0.26.0
     ports: ["9115:9115"]
-    # External availability probe — a flat line during livepatch.
+    # Default config (baked into the image) already ships http_2xx and
+    # tcp_connect — exactly the two modules this stand needs, no custom
+    # config to mount.
+    # Availability probes: http_2xx for the web nodes, tcp_connect for MySQL —
+    # a visible flat line/drop across a restart is the continuity demo.

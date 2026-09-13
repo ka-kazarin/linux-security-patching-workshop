@@ -83,10 +83,10 @@ init: ## create a local venv with test dependencies (needed for make verify)
 
 # --- Stand (Vagrant) ----------------------------------------------------------
 
-up: ## bring up the full stand (4 VMs: stage + prod)
+up: ## bring up the full stand (5 VMs: stage + prod + mon)
 	$(call run,cd $(STAND_DIR) && vagrant up)
 
-up-lite: ## bring up the lightweight stand (2 VMs, stage only)
+up-lite: ## bring up the lightweight stand (3 VMs: stage + mon)
 	$(call run,cd $(STAND_DIR) && STAND_PROFILE=lite vagrant up)
 
 halt: ## power off the stand, keep the VM disks (fast to bring back up with make up/up-lite)

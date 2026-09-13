@@ -2,5 +2,6 @@
   "db-stage":  {"box": "oracle", "script": "db.sh",      "ip": "192.168.56.11"},
   "web-stage": {"box": "ubuntu", "script": "web-app.sh", "ip": "192.168.56.10"},
   "db-prod":   {"box": "oracle", "script": "db.sh",      "ip": "192.168.56.21"},
-  "web-prod":  {"box": "ubuntu", "script": "web-app.sh", "ip": "192.168.56.20"}
+  "web-prod":  {"box": "ubuntu", "script": "web-app.sh", "ip": "192.168.56.20"},
+  "mon":       {"box": "ubuntu", "script": "monitoring.sh", "ip": "192.168.56.30"}
 }

@@ -22,8 +22,8 @@ Makefile. Никакого скрытого CLI-фреймворка: кажды
 ```bash
 make help      # брендированная справка по всем командам
 make doctor    # проверка готовности окружения перед запуском
-make up-lite   # облегчённый стенд (2 VM, только stage) — для дома
-make up        # полный стенд (4 VM: stage + prod)
+make up-lite   # облегчённый стенд (3 VM: stage + mon) — для дома
+make up        # полный стенд (5 VM: stage + prod + mon)
 ```
 
 По умолчанию `vagrant up` сам скачивает образы (`bento/ubuntu-26.04`,
