@@ -14,7 +14,7 @@ step" principle, AGENTS.md §2.7) — it just doesn't live in git.
 | `scan-before.html` / `scan-after.html` | `make scan-before/after` | Trivy via Ansible (`ansible/scan.yml`) against the live VMs |
 | `verify.html` | `make verify` | `pytest --html` |
 | `attack.log` | `make attack` | PoC output (during stand provisioning, isolated) |
-| `bench-before.json` / `bench-after.json` | `make bench-before/after` | `ab` (nginx static + PHP-FPM/WordPress) + `mysqlslap` via Ansible (`ansible/bench.yml`) — smoke-level load baseline, not a rigorous benchmark; `make bench-delta` (`scan/bench_compare.py`) prints the before/after/delta table |
+| `bench-before.json` / `bench-after.json` | `make bench-before/after` | `wrk` (nginx static + PHP-FPM/WordPress) + `sysbench oltp_read_only` (MySQL) via Ansible (`ansible/bench.yml`) — 1 warmup run (discarded) + 2 timed runs per metric, sampled at an interval into a throughput/latency time series; smoke-level load baseline, not a rigorous benchmark; `make bench-delta` (`scan/bench_compare.py`) prints the before/after **median**+p90/delta table (verdict driven by median, p90 shown for context) and renders a throughput sparkline (before vs after overlaid) per metric in `results/bench.html` |
 
 All of these are produced once the stand is built and scanned, and refreshed
 before the event. `python3 scan/delta.py` run directly (no `--before`/

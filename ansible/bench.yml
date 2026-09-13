@@ -1,9 +1,26 @@
 ---
 # Load baseline for "did the patch slow anything down" -- NOT a rigorous
-# benchmark. Smoke-level: ab against nginx (static) and PHP-FPM+MySQL
-# (WordPress home page) on the web host, mysqlslap against the local MySQL
-# server on the db host. VM noise is real; scan/bench_compare.py applies a
-# ~15-20% tolerance rather than pretending these numbers are lab-precise.
+# benchmark. Methodology: per metric, 1 warmup run (discarded -- absorbs a
+# cold OS disk cache / first-hit compile so it can't masquerade as a
+# regression) + 2 timed runs. Each timed run is sampled at a fixed interval,
+# producing a throughput+latency time series; median and p90 are computed
+# across every sample from BOTH timed runs. Durations are Makefile-driven
+# (BENCH_WARMUP/BENCH_DURATION/BENCH_RUNS/BENCH_INTERVAL -e overrides) so the
+# boring, slow, honest defaults below don't need editing to try something
+# short.
+#
+# Tools -- one per layer (AGENTS.md "one tool per step"):
+#  - web host (nginx static file + WordPress PHP page): wrk. It has no
+#    built-in interval reporting, so a timed run IS a sequence of short wrk
+#    windows (wrk -d<interval>s); each window is one sample (Requests/sec +
+#    wrk's own p50 latency).
+#  - db host (MySQL): sysbench oltp_read_only, installed via EPEL. Its own
+#    --report-interval windows the run for us -- one sysbench process per
+#    timed run, printing one sample line per interval (tps + p95 latency).
+#    (Verified live on Oracle Linux 9.6: `dnf install -y epel-release
+#    sysbench` resolves and installs cleanly -- no mysqlslap fallback
+#    needed here.)
+#
 # Vars: env=stage|prod (default stage), out=path without extension
 # (default results/bench-{{ env }}) -- .json gets appended.
 - name: Reset bench workspace on the controller
@@ -23,76 +40,142 @@
   hosts: "{{ env | default('stage') }}"
   become: true
   vars:
+    # Methodology knobs -- overridden from the Makefile via -e bench_*.
+    bench_warmup: 60      # seconds, one run, discarded
+    bench_duration: 180   # seconds per timed run
+    bench_runs: 2         # timed runs per metric
+    bench_interval: 10    # seconds per sample window
     # Static file nginx serves directly (not routed through PHP-FPM) --
     # confirmed live with `curl -sI` against web-stage: WordPress core always
     # ships this file, and nginx's `try_files` in nginx-wordpress.conf hands
     # a plain file straight back without touching index.php.
     static_path: /wp-includes/js/wp-embed.min.js
-    ab_static_requests: 500
-    ab_static_concurrency: 10
-    ab_php_requests: 200
-    ab_php_concurrency: 5
-    mysqlslap_concurrency: 10
-    mysqlslap_iterations: 5
-    mysqlslap_queries: 1000
+    wrk_threads: 2
+    wrk_connections: 10
+    sysbench_tables: 2
+    sysbench_table_size: 10000
+    sysbench_threads: 4
   tasks:
-    # --- web host: nginx (static) + PHP-FPM+MySQL (WordPress home) ---------
-    - name: Install apache2-utils for ab (web hosts only)
+    # --- web host: nginx (static) + PHP-FPM+MySQL (WordPress home) --------
+    - name: Install wrk (web hosts only)
       ansible.builtin.apt:
-        name: apache2-utils
+        name: wrk
         state: present
         update_cache: true
       when: "'web' in group_names"
 
-    - name: Run ab against a real static file served directly by nginx
-      ansible.builtin.command:
-        cmd: >
-          ab -n {{ ab_static_requests }} -c {{ ab_static_concurrency }}
-          http://localhost{{ static_path }}
-      register: ab_static_result
+    - name: Warmup + timed runs against a real static file served by nginx
+      ansible.builtin.shell: |
+        set -euo pipefail
+        URL="http://localhost{{ static_path }}"
+        echo "### warmup"
+        wrk -d{{ bench_warmup }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL" >/dev/null
+        windows=$(( {{ bench_duration }} / {{ bench_interval }} ))
+        for run in $(seq 1 {{ bench_runs }}); do
+          echo "### run $run"
+          for w in $(seq 1 "$windows"); do
+            echo "### window t=$(( (w - 1) * {{ bench_interval }} ))"
+            wrk -d{{ bench_interval }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL"
+          done
+        done
+      register: wrk_static_result
       changed_when: false
       when: "'web' in group_names"
 
-    - name: Save raw ab (nginx-static) output for the controller to parse
+    - name: Save raw wrk (nginx-static) output for the controller to parse
       ansible.builtin.copy:
-        content: "{{ ab_static_result.stdout }}"
+        content: "{{ wrk_static_result.stdout }}"
         dest: /tmp/stand-bench/{{ inventory_hostname }}-nginx-static.txt
       delegate_to: localhost
       become: false
       when: "'web' in group_names"
 
-    - name: Run ab against the WordPress home page (PHP-FPM + MySQL)
-      ansible.builtin.command:
-        cmd: >
-          ab -n {{ ab_php_requests }} -c {{ ab_php_concurrency }}
-          http://localhost/
-      register: ab_php_result
+    - name: Warmup + timed runs against the WordPress home page (PHP-FPM + MySQL)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        URL="http://localhost/"
+        echo "### warmup"
+        wrk -d{{ bench_warmup }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL" >/dev/null
+        windows=$(( {{ bench_duration }} / {{ bench_interval }} ))
+        for run in $(seq 1 {{ bench_runs }}); do
+          echo "### run $run"
+          for w in $(seq 1 "$windows"); do
+            echo "### window t=$(( (w - 1) * {{ bench_interval }} ))"
+            wrk -d{{ bench_interval }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL"
+          done
+        done
+      register: wrk_php_result
       changed_when: false
       when: "'web' in group_names"
 
-    - name: Save raw ab (php) output for the controller to parse
+    - name: Save raw wrk (php) output for the controller to parse
       ansible.builtin.copy:
-        content: "{{ ab_php_result.stdout }}"
+        content: "{{ wrk_php_result.stdout }}"
         dest: /tmp/stand-bench/{{ inventory_hostname }}-php.txt
       delegate_to: localhost
       become: false
       when: "'web' in group_names"
 
-    # --- db host: mysqlslap against the local MySQL server ----------------
-    - name: Run mysqlslap against the local MySQL server (db hosts only)
+    # --- db host: sysbench oltp_read_only against the local MySQL server --
+    - name: Install EPEL (db hosts only, needed for sysbench)
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+      when: "'db' in group_names"
+
+    - name: Install sysbench (db hosts only)
+      ansible.builtin.dnf:
+        name: sysbench
+        state: present
+      when: "'db' in group_names"
+
+    - name: Create a dedicated sysbench database (idempotent, db hosts only)
+      ansible.builtin.command:
+        cmd: mysql -uroot -e "CREATE DATABASE IF NOT EXISTS sbtest CHARACTER SET utf8mb4;"
+      changed_when: true
+      when: "'db' in group_names"
+
+    # sysbench prepare has no "IF NOT EXISTS" flag of its own -- check for
+    # the last table it would create and skip the (re-)load when it's
+    # already there, same idempotence contract as the rest of the stand.
+    - name: Check whether sysbench tables are already prepared (db hosts only)
       ansible.builtin.command:
         cmd: >
-          mysqlslap -uroot --auto-generate-sql
-          --concurrency={{ mysqlslap_concurrency }}
-          --iterations={{ mysqlslap_iterations }}
-          --number-of-queries={{ mysqlslap_queries }}
-      register: mysqlslap_result
+          mysql -uroot -N -e
+          "SELECT COUNT(*) FROM information_schema.tables
+           WHERE table_schema='sbtest' AND table_name='sbtest{{ sysbench_tables }}';"
+      register: sysbench_table_check
       changed_when: false
       when: "'db' in group_names"
 
-    - name: Save raw mysqlslap output for the controller to parse
+    - name: Prepare sysbench oltp_read_only tables (idempotent, db hosts only)
+      ansible.builtin.command:
+        cmd: >
+          sysbench oltp_read_only --db-driver=mysql --mysql-user=root
+          --mysql-db=sbtest --mysql-socket=/var/lib/mysql/mysql.sock
+          --tables={{ sysbench_tables }} --table-size={{ sysbench_table_size }} prepare
+      when: >
+        'db' in group_names and
+        (sysbench_table_check.stdout | default('0') | trim) == '0'
+      changed_when: true
+
+    - name: Warmup + timed runs of sysbench oltp_read_only (db hosts only)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ARGS="--db-driver=mysql --mysql-user=root --mysql-db=sbtest --mysql-socket=/var/lib/mysql/mysql.sock --tables={{ sysbench_tables }} --table-size={{ sysbench_table_size }} --threads={{ sysbench_threads }}"
+        echo "### warmup"
+        sysbench oltp_read_only $ARGS --time={{ bench_warmup }} run >/dev/null
+        for run in $(seq 1 {{ bench_runs }}); do
+          echo "### run $run"
+          sysbench oltp_read_only $ARGS --time={{ bench_duration }} --report-interval={{ bench_interval }} run
+        done
+      register: sysbench_result
+      changed_when: false
+      when: "'db' in group_names"
+
+    - name: Save raw sysbench output for the controller to parse
       ansible.builtin.copy:
-        content: "{{ mysqlslap_result.stdout }}"
+        content: "{{ sysbench_result.stdout }}"
         dest: /tmp/stand-bench/{{ inventory_hostname }}-mysql.txt
       delegate_to: localhost
       become: false
@@ -107,51 +190,109 @@
     # ansible/, not wherever ansible-playbook was invoked from.
     repo_root: "{{ playbook_dir }}/.."
     out_base: "{{ repo_root }}/{{ out | default('results/bench-' + (env | default('stage'))) }}"
-    mysqlslap_concurrency: 10
-    mysqlslap_queries: 1000
+    bench_interval: 10
   tasks:
-    - name: Parse raw ab/mysqlslap output into the bench JSON schema
+    - name: Parse raw wrk/sysbench output into the bench JSON schema (samples + median/p90)
       ansible.builtin.shell: |
         python3 -c "
-        import glob, json, re
+        import glob, json, math, re, statistics
+
+        BENCH_INTERVAL = {{ bench_interval }}
+        UNIT_TO_MS = {'us': 0.001, 'ms': 1.0, 's': 1000.0}
+
+        def chunks_of(text):
+            # Every marker line starts with '### '; prefixing a newline lets
+            # one split cleanly return every marker+body as its own chunk.
+            return [c for c in ('\n' + text).split('\n### ') if c.strip()]
+
+        def percentile(values, pct):
+            # Linear-interpolation method (numpy's default) -- stdlib has no
+            # percentile before 3.13's statistics.quantiles(), and this repo
+            # targets an older 3.x runtime (rules/python.md).
+            s = sorted(values)
+            k = (len(s) - 1) * (pct / 100)
+            f, c = math.floor(k), math.ceil(k)
+            if f == c:
+                return s[int(k)]
+            return s[f] * (c - k) + s[c] * (k - f)
+
+        def parse_wrk(text, name):
+            # wrk has no built-in interval reporting: a timed run IS a
+            # sequence of short windows (wrk -d<interval>s), each window one
+            # sample. Latency per sample is wrk's own p50 for that window --
+            # the aggregate p90 below is then p90 across those per-window
+            # medians, a second read on tail behaviour distinct from any
+            # single window's own p90.
+            samples = []
+            for chunk in chunks_of(text):
+                marker, _, body = chunk.partition('\n')
+                marker = marker.strip()
+                if marker.startswith('warmup') or marker.startswith('run '):
+                    continue
+                if not marker.startswith('window t='):
+                    raise SystemExit(f'bench: unexpected wrk marker {marker!r} in {name}')
+                rps = re.search(r'Requests/sec:\s+([0-9.]+)', body)
+                lat = re.search(r'^\s*50%\s+([0-9.]+)(us|ms|s)\b', body, re.MULTILINE)
+                if not rps or not lat:
+                    raise SystemExit(f'bench: could not parse wrk window in {name} ({marker})')
+                samples.append({
+                    'throughput': float(rps.group(1)),
+                    'latency_ms': float(lat.group(1)) * UNIT_TO_MS[lat.group(2)],
+                })
+            if not samples:
+                raise SystemExit(f'bench: no wrk samples parsed from {name}')
+            return samples
+
+        def parse_sysbench(text, name):
+            # sysbench's own --report-interval already windows the run for
+            # us: one process per timed run, one '[ Ns ]' line per sample
+            # (tps + p95 latency, the tool's own default for that line).
+            samples = []
+            for chunk in chunks_of(text):
+                marker, _, body = chunk.partition('\n')
+                marker = marker.strip()
+                if marker.startswith('warmup'):
+                    continue
+                if not marker.startswith('run '):
+                    raise SystemExit(f'bench: unexpected sysbench marker {marker!r} in {name}')
+                for m in re.finditer(r'tps:\s+([0-9.]+).*?lat \(ms,\d+%\):\s+([0-9.]+)', body):
+                    samples.append({'throughput': float(m.group(1)), 'latency_ms': float(m.group(2))})
+            if not samples:
+                raise SystemExit(f'bench: no sysbench samples parsed from {name}')
+            return samples
 
         entries = []
-
-        def tail(text, n=6):
-            return '\n'.join(text.strip().splitlines()[-n:])
-
         for path in sorted(glob.glob('/tmp/stand-bench/*.txt')):
             name = path.rsplit('/', 1)[-1][:-4]  # <host>-<metric>
             text = open(path, encoding='utf-8').read()
             if name.endswith('-nginx-static') or name.endswith('-php'):
                 metric = 'nginx-static' if name.endswith('-nginx-static') else 'php'
                 host = name[: -len('-' + metric)]
-                rps = re.search(r'Requests per second:\s+([0-9.]+)', text)
-                lat = re.search(r'Time per request:\s+([0-9.]+)\s+\[ms\]\s+\(mean\)', text)
-                if not rps or not lat:
-                    raise SystemExit(f'bench: could not parse ab output for {name} ({path})')
-                entries.append({
-                    'host': host, 'metric': metric, 'tool': 'ab',
-                    'requests_per_sec': float(rps.group(1)),
-                    'latency_ms': float(lat.group(1)),
-                    'raw': tail(text),
-                })
+                tool = 'wrk'
+                samples = parse_wrk(text, name)
             elif name.endswith('-mysql'):
+                metric = 'mysql'
                 host = name[: -len('-mysql')]
-                avg = re.search(r'Average number of seconds to run all queries:\s+([0-9.]+)', text)
-                if not avg:
-                    raise SystemExit(f'bench: could not parse mysqlslap output for {name} ({path})')
-                avg_seconds = float(avg.group(1))
-                # mysqlslap reports wall time for the whole run, not a
-                # per-query rate -- derive both from the known CLI flags
-                # (number-of-queries/concurrency, set above) the same way ab
-                # derives its 'across all concurrent requests' figure.
-                entries.append({
-                    'host': host, 'metric': 'mysql', 'tool': 'mysqlslap',
-                    'requests_per_sec': round({{ mysqlslap_queries }} / avg_seconds, 2),
-                    'latency_ms': round((avg_seconds / {{ mysqlslap_concurrency }}) * 1000, 3),
-                    'raw': tail(text),
-                })
+                tool = 'sysbench'
+                samples = parse_sysbench(text, name)
+            else:
+                raise SystemExit(f'bench: unrecognised raw file {path}')
+
+            # Global, monotonic sample clock across both timed runs -- the
+            # point is a readable sparkline, not a literal wall-clock axis.
+            for i, s in enumerate(samples):
+                s['t'] = i * BENCH_INTERVAL
+
+            throughput = [s['throughput'] for s in samples]
+            latency = [s['latency_ms'] for s in samples]
+            entries.append({
+                'host': host, 'metric': metric, 'tool': tool,
+                'samples': samples,
+                'median_throughput': round(statistics.median(throughput), 2),
+                'p90_throughput': round(percentile(throughput, 90), 2),
+                'median_latency': round(statistics.median(latency), 3),
+                'p90_latency': round(percentile(latency, 90), 3),
+            })
 
         entries.sort(key=lambda e: (e['host'], e['metric']))
         json.dump(entries, open('{{ out_base }}.json', 'w'), indent=2)

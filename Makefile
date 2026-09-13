@@ -21,6 +21,15 @@ ENV ?= stage
 SEVERITY ?= CRITICAL,HIGH
 # Command to run through the wp2shell-poc shell (make attack-shell).
 CMD ?= id
+# Load-baseline methodology (make bench-before/bench-after): 1 warmup run
+# (discarded) + BENCH_RUNS timed runs of BENCH_DURATION seconds each, sampled
+# every BENCH_INTERVAL seconds. Defaults are the boring, honest numbers for a
+# real run (warmup + 2x180s takes a while) -- override on the command line
+# for a quick mechanics check, e.g. BENCH_DURATION=20 BENCH_WARMUP=10.
+BENCH_WARMUP   ?= 60
+BENCH_DURATION ?= 180
+BENCH_RUNS     ?= 2
+BENCH_INTERVAL ?= 10
 
 STAND_DIR   := stand
 INVENTORY   := ansible/inventory.yml
@@ -74,6 +83,8 @@ help: banner ## show this help
 		awk 'BEGIN{FS=":.*?## "}{printf "  $(GREEN)%-14s$(NC) %s\n", $$1, $$2}'
 	@printf "\nVariables: $(BOLD)ENV=stage|prod$(NC) (default: stage) -- scan-before/scan-after also "
 	@printf "accept $(BOLD)ENV=all$(NC); $(BOLD)SEVERITY=CRIT,HIGH,...$(NC) for scan (default: $(SEVERITY))\n"
+	@printf "$(BOLD)BENCH_WARMUP/BENCH_DURATION/BENCH_RUNS/BENCH_INTERVAL$(NC) for bench-before/bench-after "
+	@printf "(default: warmup=$(BENCH_WARMUP)s, $(BENCH_RUNS)x$(BENCH_DURATION)s runs, sampled every $(BENCH_INTERVAL)s -- a full bench run is slow by design)\n"
 	@printf "Start with $(BOLD)make doctor$(NC), then $(BOLD)make scan-delta$(NC) — both work without a stand.\n\n"
 
 # --- Setup ---------------------------------------------------------------------
@@ -119,16 +130,17 @@ clean-results: ## remove generated demo artifacts under results (keeps README.md
 	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json)
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
+# Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
 
-bench-before: ## load baseline BEFORE patching (ab + mysqlslap on the live VMs via Ansible, ENV=stage|prod)
+bench-before: ## load baseline BEFORE patching (warmup+2x180s runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
 	$(call check_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-before)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-before -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
 
-bench-after: ## load baseline AFTER patching (ab + mysqlslap on the live VMs via Ansible, ENV=stage|prod)
+bench-after: ## load baseline AFTER patching (warmup+2x180s runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
 	$(call check_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
 
-bench-delta: ## compare the load baseline -> before/after/delta table + HTML report, flags regressions past tolerance
+bench-delta: ## compare the load baseline -> before/after/delta table + HTML report (median+p90, sparklines), flags regressions past tolerance
 	$(call run,python3 scan/bench_compare.py --before results/bench-before.json --after results/bench-after.json --html results/bench.html)
 
 # --- Patching and verification (Ansible + pytest) ------------------------------

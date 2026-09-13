@@ -85,13 +85,20 @@ what a student/user of the stand sees and uses.
   theory lives in a separate slide deck, not this repo — `docs/{en,ru}/`
   hold the stand's own scenario/usage guide instead (in progress).
 - Load baseline: `make bench-before` / `make bench-after` (`ansible/bench.yml`)
-  run `ab` against nginx (static file) and PHP-FPM+MySQL (WordPress home
-  page) on the web host, and `mysqlslap` against MySQL on the db host; `make
-  bench` (`scan/bench_compare.py`) prints a before/after/delta table and a
-  self-contained HTML report (`results/bench.html`), flagging anything
-  outside a ~20% tolerance. Smoke-level on purpose — a single VM's noise
-  floor, not a performance lab — meant to show that a patch didn't quietly
-  slow the stack down, not to certify throughput numbers.
+  run `wrk` against nginx (static file) and PHP-FPM+MySQL (WordPress home
+  page) on the web host, and `sysbench oltp_read_only` (via EPEL) against
+  MySQL on the db host. Methodology: per metric, 1 warmup run (discarded, so
+  a warmed-up OS disk cache on the second run can't masquerade as a
+  regression) + 2 timed runs, each sampled at a fixed interval
+  (`BENCH_WARMUP`/`BENCH_DURATION`/`BENCH_RUNS`/`BENCH_INTERVAL`, default
+  60s/180s/2/10s) into a throughput+latency time series. `make bench-delta`
+  (`scan/bench_compare.py`) prints a before/after **median**+p90/delta table
+  (verdict driven by median, p90 shown for context only) and renders a
+  self-contained HTML report (`results/bench.html`) with a throughput
+  sparkline (before vs after overlaid) per metric, flagging anything whose
+  median moved outside a ~20% tolerance. Smoke-level on purpose — a single
+  VM's noise floor, not a performance lab — meant to show that a patch
+  didn't quietly slow the stack down, not to certify throughput numbers.
 - All HTML reports (scan, delta, bench) now share one visual identity —
   a dark-navy header with a cyan accent, white cards, pill badges, inspired
   by slurm.io — factored into `scan/report_style.py` (the Trivy Go template
