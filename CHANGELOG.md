@@ -72,3 +72,10 @@ what a student/user of the stand sees and uses.
 - `docs/en/exercises.md` / `docs/ru/exercises.md` (4 exercises). Webinar
   theory lives in a separate slide deck, not this repo — `docs/{en,ru}/`
   hold the stand's own scenario/usage guide instead (in progress).
+- Load baseline: `make bench-before` / `make bench-after` (`ansible/bench.yml`)
+  run `ab` against nginx (static file) and PHP-FPM+MySQL (WordPress home
+  page) on the web host, and `mysqlslap` against MySQL on the db host; `make
+  bench` (`scan/bench_compare.py`) prints a before/after/delta table and
+  flags anything outside a ~20% tolerance. Smoke-level on purpose — a single
+  VM's noise floor, not a performance lab — meant to show that a patch
+  didn't quietly slow the stack down, not to certify throughput numbers.

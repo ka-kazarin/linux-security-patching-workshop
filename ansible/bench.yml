@@ -1,0 +1,165 @@
+---
+# Load baseline for "did the patch slow anything down" -- NOT a rigorous
+# benchmark. Smoke-level: ab against nginx (static) and PHP-FPM+MySQL
+# (WordPress home page) on the web host, mysqlslap against the local MySQL
+# server on the db host. VM noise is real; scan/bench_compare.py applies a
+# ~15-20% tolerance rather than pretending these numbers are lab-precise.
+# Vars: env=stage|prod (default stage), out=path without extension
+# (default results/bench-{{ env }}) -- .json gets appended.
+- name: Reset bench workspace on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # Same reasoning as ansible/scan.yml: a workspace scoped to one env
+    # must not pick up raw output a previous, wider run left behind.
+    - name: Clear per-host raw output left over from a previous run
+      ansible.builtin.file:
+        path: /tmp/stand-bench
+        state: "{{ item }}"
+      loop: [absent, directory]
+
+- name: Benchmark hosts ({{ env | default('stage') }})
+  hosts: "{{ env | default('stage') }}"
+  become: true
+  vars:
+    # Static file nginx serves directly (not routed through PHP-FPM) --
+    # confirmed live with `curl -sI` against web-stage: WordPress core always
+    # ships this file, and nginx's `try_files` in nginx-wordpress.conf hands
+    # a plain file straight back without touching index.php.
+    static_path: /wp-includes/js/wp-embed.min.js
+    ab_static_requests: 500
+    ab_static_concurrency: 10
+    ab_php_requests: 200
+    ab_php_concurrency: 5
+    mysqlslap_concurrency: 10
+    mysqlslap_iterations: 5
+    mysqlslap_queries: 1000
+  tasks:
+    # --- web host: nginx (static) + PHP-FPM+MySQL (WordPress home) ---------
+    - name: Install apache2-utils for ab (web hosts only)
+      ansible.builtin.apt:
+        name: apache2-utils
+        state: present
+        update_cache: true
+      when: "'web' in group_names"
+
+    - name: Run ab against a real static file served directly by nginx
+      ansible.builtin.command:
+        cmd: >
+          ab -n {{ ab_static_requests }} -c {{ ab_static_concurrency }}
+          http://localhost{{ static_path }}
+      register: ab_static_result
+      changed_when: false
+      when: "'web' in group_names"
+
+    - name: Save raw ab (nginx-static) output for the controller to parse
+      ansible.builtin.copy:
+        content: "{{ ab_static_result.stdout }}"
+        dest: /tmp/stand-bench/{{ inventory_hostname }}-nginx-static.txt
+      delegate_to: localhost
+      become: false
+      when: "'web' in group_names"
+
+    - name: Run ab against the WordPress home page (PHP-FPM + MySQL)
+      ansible.builtin.command:
+        cmd: >
+          ab -n {{ ab_php_requests }} -c {{ ab_php_concurrency }}
+          http://localhost/
+      register: ab_php_result
+      changed_when: false
+      when: "'web' in group_names"
+
+    - name: Save raw ab (php) output for the controller to parse
+      ansible.builtin.copy:
+        content: "{{ ab_php_result.stdout }}"
+        dest: /tmp/stand-bench/{{ inventory_hostname }}-php.txt
+      delegate_to: localhost
+      become: false
+      when: "'web' in group_names"
+
+    # --- db host: mysqlslap against the local MySQL server ----------------
+    - name: Run mysqlslap against the local MySQL server (db hosts only)
+      ansible.builtin.command:
+        cmd: >
+          mysqlslap -uroot --auto-generate-sql
+          --concurrency={{ mysqlslap_concurrency }}
+          --iterations={{ mysqlslap_iterations }}
+          --number-of-queries={{ mysqlslap_queries }}
+      register: mysqlslap_result
+      changed_when: false
+      when: "'db' in group_names"
+
+    - name: Save raw mysqlslap output for the controller to parse
+      ansible.builtin.copy:
+        content: "{{ mysqlslap_result.stdout }}"
+        dest: /tmp/stand-bench/{{ inventory_hostname }}-mysql.txt
+      delegate_to: localhost
+      become: false
+      when: "'db' in group_names"
+
+- name: Parse raw output and write the bench JSON (controller-side)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Same cwd caveat as scan.yml: connection: local runs with cwd =
+    # ansible/, not wherever ansible-playbook was invoked from.
+    repo_root: "{{ playbook_dir }}/.."
+    out_base: "{{ repo_root }}/{{ out | default('results/bench-' + (env | default('stage'))) }}"
+    mysqlslap_concurrency: 10
+    mysqlslap_queries: 1000
+  tasks:
+    - name: Parse raw ab/mysqlslap output into the bench JSON schema
+      ansible.builtin.shell: |
+        python3 -c "
+        import glob, json, re
+
+        entries = []
+
+        def tail(text, n=6):
+            return '\n'.join(text.strip().splitlines()[-n:])
+
+        for path in sorted(glob.glob('/tmp/stand-bench/*.txt')):
+            name = path.rsplit('/', 1)[-1][:-4]  # <host>-<metric>
+            text = open(path, encoding='utf-8').read()
+            if name.endswith('-nginx-static') or name.endswith('-php'):
+                metric = 'nginx-static' if name.endswith('-nginx-static') else 'php'
+                host = name[: -len('-' + metric)]
+                rps = re.search(r'Requests per second:\s+([0-9.]+)', text)
+                lat = re.search(r'Time per request:\s+([0-9.]+)\s+\[ms\]\s+\(mean\)', text)
+                if not rps or not lat:
+                    raise SystemExit(f'bench: could not parse ab output for {name} ({path})')
+                entries.append({
+                    'host': host, 'metric': metric, 'tool': 'ab',
+                    'requests_per_sec': float(rps.group(1)),
+                    'latency_ms': float(lat.group(1)),
+                    'raw': tail(text),
+                })
+            elif name.endswith('-mysql'):
+                host = name[: -len('-mysql')]
+                avg = re.search(r'Average number of seconds to run all queries:\s+([0-9.]+)', text)
+                if not avg:
+                    raise SystemExit(f'bench: could not parse mysqlslap output for {name} ({path})')
+                avg_seconds = float(avg.group(1))
+                # mysqlslap reports wall time for the whole run, not a
+                # per-query rate -- derive both from the known CLI flags
+                # (number-of-queries/concurrency, set above) the same way ab
+                # derives its 'across all concurrent requests' figure.
+                entries.append({
+                    'host': host, 'metric': 'mysql', 'tool': 'mysqlslap',
+                    'requests_per_sec': round({{ mysqlslap_queries }} / avg_seconds, 2),
+                    'latency_ms': round((avg_seconds / {{ mysqlslap_concurrency }}) * 1000, 3),
+                    'raw': tail(text),
+                })
+
+        entries.sort(key=lambda e: (e['host'], e['metric']))
+        json.dump(entries, open('{{ out_base }}.json', 'w'), indent=2)
+        print(f'bench: wrote {len(entries)} metric(s) to {{ out_base }}.json')
+        "
+      changed_when: true
+      register: bench_result
+
+    - name: Show bench result
+      ansible.builtin.debug:
+        var: bench_result.stdout

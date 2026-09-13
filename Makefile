@@ -56,7 +56,8 @@ define check_scan_env
 endef
 
 .PHONY: help banner up up-lite halt destroy urls creds scan-before scan-after attack attack-shell \
-        patch patch-reboot patch-wordpress verify delta rollout waf-on waf-off doctor init clean-results
+        patch patch-reboot patch-wordpress verify delta bench-before bench-after bench rollout \
+        waf-on waf-off doctor init clean-results
 
 banner:
 	@printf "$(BOLD)"
@@ -115,7 +116,20 @@ delta: ## compute the scan delta -> CSV (Registry) + HTML chart
 	$(call run,python3 scan/delta.py --before results/scan-before.json --after results/scan-after.json --csv results/delta.csv --html results/delta.html)
 
 clean-results: ## remove generated demo artifacts under results (keeps README.md)
-	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log)
+	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json)
+
+# --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
+
+bench-before: ## load baseline BEFORE patching (ab + mysqlslap on the live VMs via Ansible, ENV=stage|prod)
+	$(call check_env)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-before)
+
+bench-after: ## load baseline AFTER patching (ab + mysqlslap on the live VMs via Ansible, ENV=stage|prod)
+	$(call check_env)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after)
+
+bench: ## compare the load baseline -> before/after/delta table, flags regressions past tolerance
+	$(call run,python3 scan/bench_compare.py --before results/bench-before.json --after results/bench-after.json)
 
 # --- Patching and verification (Ansible + pytest) ------------------------------
 

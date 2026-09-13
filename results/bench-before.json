@@ -1,0 +1,26 @@
+[
+  {
+    "host": "db-stage",
+    "metric": "mysql",
+    "tool": "mysqlslap",
+    "requests_per_sec": 1364.26,
+    "latency_ms": 73.3,
+    "raw": "Benchmark\n\tAverage number of seconds to run all queries: 0.733 seconds\n\tMinimum number of seconds to run all queries: 0.673 seconds\n\tMaximum number of seconds to run all queries: 0.794 seconds\n\tNumber of clients running queries: 10\n\tAverage number of queries per client: 100"
+  },
+  {
+    "host": "web-stage",
+    "metric": "nginx-static",
+    "tool": "ab",
+    "requests_per_sec": 4924.85,
+    "latency_ms": 2.031,
+    "raw": "  80%      2\n  90%      3\n  95%      3\n  98%      4\n  99%      5\n 100%      6 (longest request)"
+  },
+  {
+    "host": "web-stage",
+    "metric": "php",
+    "tool": "ab",
+    "requests_per_sec": 20.92,
+    "latency_ms": 239.025,
+    "raw": "  80%    264\n  90%    288\n  95%    305\n  98%    315\n  99%    345\n 100%    384 (longest request)"
+  }
+]
