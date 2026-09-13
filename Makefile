@@ -167,13 +167,18 @@ patch-wordpress: ## patch the app-layer CVE (WordPress core, ENV=stage|prod) -- 
 # is closed: that's what `make scan-after` (Trivy) and `make attack` (the live
 # PoC) are for -- verifying the fix twice, in pytest and in a scan, would be
 # dead duplicate work (three layers, three owners: docs/en/README.md).
-# Skips cleanly (exit 0) when the stand is unreachable.
-verify: ## smoke-test the stand: services still alive after a patch -> HTML report (STAND_URL from ENV=stage|prod)
+# Two layers: test_functional.py (external HTTP, requests) and
+# test_health.py (testinfra over SSH via the ansible inventory) -- the
+# latter tells apart "a VM is down" (FAIL on that host, SSH-unreachable)
+# from "a service on a live VM is down" (FAIL on that service) from "the
+# stand was never brought up" (clean skip, exit 0, only when EVERY host of
+# ENV is unreachable).
+verify: ## health-smoke the stand: SSH + service checks (web+db) after a patch -> HTML report (ENV=stage|prod)
 	$(call check_env)
 ifneq ("$(wildcard $(VENV_PYTHON))","")
-	$(call run,. $(VENV_DIR)/bin/activate && STAND_URL=$(WEB_URL) python3 -m pytest -m stand --html=results/verify.html --self-contained-html && deactivate)
+	$(call run,. $(VENV_DIR)/bin/activate && STAND_URL=$(WEB_URL) STAND_ENV=$(ENV) python3 -m pytest -m stand --html=results/verify.html --self-contained-html && deactivate)
 else
-	$(call run,STAND_URL=$(WEB_URL) python3 -m pytest -m stand --html=results/verify.html --self-contained-html)
+	$(call run,STAND_URL=$(WEB_URL) STAND_ENV=$(ENV) python3 -m pytest -m stand --html=results/verify.html --self-contained-html)
 endif
 
 # Hard env=prod throughout, deliberately not ENV-driven like the targets

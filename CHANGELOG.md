@@ -146,3 +146,18 @@ what a student/user of the stand sees and uses.
   the stage manifest resolves correctly against `web-prod`/`db-prod`.
   `ansible/rollout.yml` (the old thin `import_playbook: patch.yml` wrapper)
   is removed — nothing imports it anymore.
+- `make verify` is now a real health-smoke, not HTTP-only: `tests/test_health.py`
+  (pytest-testinfra, `ansible` connection backend — hosts/IPs/SSH keys come
+  from `ansible/inventory.yml`, `STAND_ENV` picks the stage/prod group)
+  checks, per host of the group: SSH reachable; web hosts — nginx running,
+  `:80` listening, `localhost/` returns 200, `/wp-admin/` responds without a
+  5xx, php-fpm running (unit name read live via systemd, not hardcoded); db
+  hosts — mysqld running, `:3306` listening, `mysql -uroot -e 'SELECT 1'`
+  answers. Tells apart three failure modes the old requests-only smoke could
+  not: a service down on a live VM fails on that service; a VM that never
+  came back up (e.g. missed a patch-reboot) fails on SSH reachability for
+  that host specifically, while a live sibling host's checks still run;
+  every host of the group unreachable means the stand was never brought up
+  and the whole run skips cleanly (exit 0), same as before. The previous
+  external HTTP smoke (`tests/test_functional.py`, `requests`) stays as-is,
+  checking the same page from outside the VM over the network.
