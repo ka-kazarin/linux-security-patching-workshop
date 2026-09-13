@@ -44,13 +44,26 @@ imported and never touches the network. Link to the images: _to be added_.
 
 1. `make scan-before` — vulnerability scan (Trivy, orchestrated by Ansible
    against the live VMs).
-2. `make patch ENV=stage` — patch OS/middleware via Ansible.
-3. `make verify` — pytest smoke: services still alive after the patch (it
+2. `make patch-plan ENV=stage` — freeze pending SECURITY updates as exact
+   `package=version` pairs into a manifest (installs nothing). Between
+   patching stage today and rolling out to prod tomorrow, a plain
+   `apt/dnf upgrade` can pull in a *different* set (new updates land on the
+   mirror in between) — the manifest is what makes "prod gets exactly what
+   was tested on stage" true rather than aspirational.
+3. `make patch ENV=stage` — patch OS/middleware via Ansible. Installs the
+   frozen manifest's exact versions when one exists for this env, otherwise
+   falls back to "whatever the security pocket currently serves" (and says
+   so).
+4. `make verify` — pytest smoke: services still alive after the patch (it
    didn't break anything). Proof the CVE is *closed* comes from
    `make scan-after` and `make attack`, not from here.
-4. `make scan-after` — vulnerabilities closed.
-5. `make rollout` — roll out to prod with the same playbook.
-6. `make scan-delta` — scan delta, exported for the registry.
+5. `make scan-after` — vulnerabilities closed.
+6. `make rollout` — roll out to **prod**, hard-coded: applies the *stage*
+   manifest to prod (parity — the exact package set already verified on
+   stage, not a fresh mirror resolve that could've drifted since), patches
+   the WordPress core CVE, reboots + cleans up the old kernel, then reruns
+   `make verify ENV=prod`. Refuses to run without a tested stage manifest.
+7. `make scan-delta` — scan delta, exported for the registry.
 
 Live exploit and virtual patching: `make attack` → `make waf-on` →
 `make attack` (403) → `make patch-wordpress` (the real fix) → `make waf-off`

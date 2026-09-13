@@ -6,6 +6,11 @@
 - name: Patch OS and middleware ({{ env | default('stage') }})
   hosts: "{{ env | default('stage') }}"
   become: true
+  vars:
+    # Frozen manifest from `make patch-plan` (ansible/patch-plan.yml, see its
+    # header). Override with -e plan_file=... so `make rollout` can point
+    # prod at the manifest that was actually tested on stage.
+    plan_file: "results/patch-plan-{{ env | default('stage') }}.json"
   tasks:
     - name: Install unattended-upgrades (Debian/Ubuntu)
       ansible.builtin.apt:
@@ -45,11 +50,70 @@
         mode: "0644"
       when: ansible_facts['os_family'] == "Debian"
 
+    - name: Determine this host's role (web/db) for cross-env manifest matching
+      ansible.builtin.set_fact:
+        patch_plan_role: "{{ 'web' if 'web' in group_names else 'db' }}"
+
+    - name: Check whether a frozen patch-plan manifest exists for this env
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../{{ plan_file }}"
+      delegate_to: localhost
+      become: false
+      register: patch_plan_stat
+
+    # Manifests key packages by the host that was actually scanned (e.g.
+    # web-stage) -- `make rollout` deliberately applies the STAGE manifest
+    # against the PROD hosts (-e plan_file=results/patch-plan-stage.json),
+    # where inventory_hostname is web-prod/db-prod, never a literal key in
+    # that file. Fall back to any manifest host sharing this host's role
+    # group (web/db -- the one thing stage and prod share) so the same
+    # lookup resolves both on its own env (exact match) and applied
+    # cross-env (role match).
+    - name: Load this host's package list from the frozen patch-plan manifest, if any
+      ansible.builtin.set_fact:
+        patch_plan_pkgs: >-
+          {{
+            ((lookup('ansible.builtin.file', playbook_dir + '/../' + plan_file) | from_json).hosts
+             if patch_plan_stat.stat.exists else {})
+            | dict2items
+            | selectattr('key', 'in', ([inventory_hostname] + groups[patch_plan_role]))
+            | map(attribute='value.packages') | list | first | default([])
+          }}
+
+    - name: Notice when patching without a frozen patch-plan manifest
+      ansible.builtin.debug:
+        msg: >-
+          No frozen patch-plan manifest at {{ plan_file }} -- applying
+          whatever the mirror currently serves. Run `make patch-plan
+          ENV={{ env | default('stage') }}` first for a reproducible,
+          stage-tested package set before rolling out to prod.
+      when: not patch_plan_stat.stat.exists
+
+    - name: Install pinned security-update versions from the frozen patch-plan manifest (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ patch_plan_pkgs | map(attribute='name') | zip(patch_plan_pkgs | map(attribute='version')) | map('join', '=') | list }}"
+        state: present
+        allow_downgrade: true
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - patch_plan_pkgs | length > 0
+
     - name: Apply security updates only (Debian/Ubuntu, apt -security pocket)
       ansible.builtin.command: unattended-upgrade -v
       register: uu_result
       changed_when: "'Packages that will be upgraded:' in uu_result.stdout and uu_result.stdout.split('Packages that will be upgraded:')[1].split('\\n')[0].strip() != ''"
-      when: ansible_facts['os_family'] == "Debian"
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - patch_plan_pkgs | length == 0
+
+    - name: Install pinned security-update versions from the frozen patch-plan manifest (Oracle Linux)
+      ansible.builtin.dnf:
+        name: "{{ patch_plan_pkgs | map(attribute='name') | zip(patch_plan_pkgs | map(attribute='version')) | map('join', '-') | list }}"
+        state: present
+        allow_downgrade: true
+      when:
+        - ansible_facts['os_family'] == "RedHat"
+        - patch_plan_pkgs | length > 0
 
     # dnf's `security: true` module option is a thin, easy-to-misread wrapper
     # (it still lists name: "*") — spelled out as the plain command Red Hat's
@@ -59,7 +123,9 @@
       ansible.builtin.command: dnf upgrade --security -y
       register: dnf_security
       changed_when: "'Nothing to do' not in dnf_security.stdout"
-      when: ansible_facts['os_family'] == "RedHat"
+      when:
+        - ansible_facts['os_family'] == "RedHat"
+        - patch_plan_pkgs | length == 0
 
     - name: Remove now-unneeded packages (Debian/Ubuntu)
       ansible.builtin.apt:

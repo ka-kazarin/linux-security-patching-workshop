@@ -65,7 +65,7 @@ define check_scan_env
 endef
 
 .PHONY: help banner up up-lite halt destroy urls creds scan-before scan-after attack attack-shell \
-        patch patch-reboot patch-wordpress verify scan-delta bench-before bench-after bench-delta rollout \
+        patch-plan patch patch-reboot patch-wordpress verify scan-delta bench-before bench-after bench-delta rollout \
         waf-on waf-off doctor init clean-results
 
 banner:
@@ -127,7 +127,7 @@ scan-delta: ## compute the scan delta -> CSV (Registry) + HTML chart
 	$(call run,python3 scan/delta.py --before results/scan-before.json --after results/scan-after.json --csv results/delta.csv --html results/delta.html)
 
 clean-results: ## remove generated demo artifacts under results (keeps README.md)
-	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json)
+	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json results/patch-plan-*.json results/patch-plan-*.html)
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
 # Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
@@ -145,7 +145,11 @@ bench-delta: ## compare the load baseline -> before/after/delta table + HTML rep
 
 # --- Patching and verification (Ansible + pytest) ------------------------------
 
-patch: ## apply OS/middleware patches (ENV=stage|prod)
+patch-plan: ## freeze pending SECURITY updates as {package: version} -> manifest + HTML report, installs nothing (ENV=stage|prod)
+	$(call check_env)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-plan.yml -e env=$(ENV))
+
+patch: ## apply OS/middleware patches -- exact versions from results/patch-plan-<ENV>.json if it exists, else the current security pocket (ENV=stage|prod)
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=$(ENV))
 
@@ -172,8 +176,19 @@ else
 	$(call run,STAND_URL=$(WEB_URL) python3 -m pytest -m stand --html=results/verify.html --self-contained-html)
 endif
 
-rollout: ## roll out to prod with the same playbook (after verify on stage)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/rollout.yml -e env=prod)
+# Hard env=prod throughout, deliberately not ENV-driven like the targets
+# above: rollout has exactly one direction (stage -> prod), never the
+# reverse. Applies the FROZEN stage manifest to prod (parity: prod gets the
+# exact package/version set already tested on stage, not a fresh mirror
+# resolve that could've drifted since), then the app-layer patch, kernel
+# reboot cleanup, and a final smoke check -- one operation instead of four
+# manual steps a presenter could run out of order.
+rollout: ## roll out the STAGE-tested patch-plan to prod: patch -> patch-wordpress -> patch-reboot -> verify (hard env=prod, needs `make patch-plan ENV=stage` tested first)
+	@test -f results/patch-plan-stage.json || { printf "$(RED)✗ no frozen stage patch-plan (results/patch-plan-stage.json) -- run 'make patch-plan ENV=stage', test it on stage, then retry$(NC)\n" >&2; exit 1; }
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=prod -e plan_file=results/patch-plan-stage.json)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-wordpress.yml -e env=prod)
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/reboot-cleanup.yml -e env=prod)
+	$(MAKE) verify ENV=prod
 
 # --- Exploit and virtual patch (isolated network only!) -------------------------
 

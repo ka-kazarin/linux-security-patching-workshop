@@ -1,0 +1,225 @@
+---
+# Computes pending SECURITY updates as {name, version} per host, WITHOUT
+# installing anything -- freezes the exact set patch.yml's manifest-aware
+# install path (results/patch-plan-<env>.json) applies later, so the set
+# tested on stage is the set that ships to prod (docs/en/README.md, "make
+# rollout"). Same "gather on hosts, merge+render on the controller" shape
+# as scan.yml. Vars: env=stage|prod (default stage), out=path without
+# extension (default results/patch-plan-{{ env }}) -- .json and .html get
+# appended.
+- name: Reset patch-plan workspace on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # Same reason as scan.yml's workspace reset: without this, a plan
+    # scoped to one env still merges in stale per-host files a previous,
+    # wider run left behind.
+    - name: Clear per-host plan data left over from a previous run
+      ansible.builtin.file:
+        path: /tmp/stand-patch-plan
+        state: "{{ item }}"
+      loop: [absent, directory]
+
+- name: Compute pending security updates ({{ env | default('stage') }})
+  hosts: "{{ env | default('stage') }}"
+  become: true
+  tasks:
+    # --- Debian/Ubuntu -----------------------------------------------------
+    # Same security-only allowlist patch.yml applies for real -- a dry-run
+    # without it would report ordinary updates too, giving a plan that
+    # doesn't match what patch.yml would actually install.
+    - name: Install unattended-upgrades (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+        update_cache: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Restrict unattended-upgrades to security origins only (Debian/Ubuntu)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/51unattended-upgrades-security-only
+        content: |
+          #clear Unattended-Upgrade::Allowed-Origins;
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+              "${distro_id}ESMApps:${distro_codename}-apps-security";
+              "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+        mode: "0644"
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Don't gate the dry-run on host AC power state (Debian/Ubuntu)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52unattended-upgrades-ignore-power
+        content: |
+          Unattended-Upgrade::OnlyOnACPower "false";
+        mode: "0644"
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Dry-run security-only upgrade to list pending packages (Debian/Ubuntu)
+      ansible.builtin.command: unattended-upgrade --dry-run -v
+      register: uu_dryrun
+      changed_when: false
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Extract pending package names from the dry-run (Debian/Ubuntu)
+      ansible.builtin.set_fact:
+        deb_pending_pkgs: >-
+          {{ (uu_dryrun.stdout.split('Packages that will be upgraded:')[1].split('\n')[0].strip().split()
+              if (uu_dryrun.stdout is defined and 'Packages that will be upgraded:' in uu_dryrun.stdout)
+              else []) }}
+      when: ansible_facts['os_family'] == "Debian"
+
+    # apt-cache policy, not the dry-run output itself: unattended-upgrade
+    # only ever prints package NAMES, never the version it would install --
+    # Candidate is exactly what apt resolves a plain `apt-get install
+    # <pkg>` to, the same source patch.yml's real install goes through.
+    - name: Look up candidate versions for pending packages (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        for pkg in {{ deb_pending_pkgs | join(' ') }}; do
+          ver=$(apt-cache policy "$pkg" | awk '/Candidate:/{print $2; exit}')
+          echo "$pkg $ver"
+        done
+      register: deb_pkg_versions
+      changed_when: false
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - deb_pending_pkgs | length > 0
+
+    # Self-describing plain text, one "name version" pair per line -- parsed
+    # on the controller in the final play. No ---UPDATEINFO--- marker (see
+    # the Oracle Linux side below) is how the parser tells the two formats
+    # apart.
+    - name: Write the pending-packages list to the controller workspace (Debian/Ubuntu)
+      ansible.builtin.copy:
+        content: |
+          OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          {{ (deb_pkg_versions.stdout_lines | default([])) | join('\n') }}
+        dest: /tmp/stand-patch-plan/{{ inventory_hostname }}.txt
+      delegate_to: localhost
+      become: false
+      when: ansible_facts['os_family'] == "Debian"
+
+    # --- Oracle Linux --------------------------------------------------------
+    # dnf's own check-update/updateinfo, not `dnf upgrade --security
+    # --assumeno`: fixed columnar output (name.arch version repo) meant to
+    # be scripted, rather than a formatted transaction table meant for a
+    # human terminal -- and updateinfo's advisory IDs come for free once
+    # we're already calling dnf for the package list. rc 100 means "updates
+    # available", not a failure.
+    - name: List pending security package updates (Oracle Linux, dnf check-update)
+      ansible.builtin.command: dnf -q check-update --security
+      register: rh_check_update
+      changed_when: false
+      failed_when: rh_check_update.rc not in [0, 100]
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: List security advisories covering pending updates (Oracle Linux)
+      ansible.builtin.command: dnf -q updateinfo list security
+      register: rh_updateinfo
+      changed_when: false
+      when: ansible_facts['os_family'] == "RedHat"
+
+    - name: Write the pending-packages / advisories data to the controller workspace (Oracle Linux)
+      ansible.builtin.copy:
+        content: |
+          OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          {{ rh_check_update.stdout }}
+          ---UPDATEINFO---
+          {{ rh_updateinfo.stdout }}
+        dest: /tmp/stand-patch-plan/{{ inventory_hostname }}.txt
+      delegate_to: localhost
+      become: false
+      when: ansible_facts['os_family'] == "RedHat"
+
+- name: Build the patch-plan manifest and HTML report (controller-side)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # IMPORTANT: connection: local runs shell/command with cwd = the
+    # playbook file's directory (ansible/), not wherever ansible-playbook
+    # was invoked from (same gotcha as scan.yml) -- every path below is
+    # absolute via playbook_dir plus a walk up to the repo root.
+    repo_root: "{{ playbook_dir }}/.."
+    out_base: "{{ repo_root }}/{{ out | default('results/patch-plan-' + (env | default('stage'))) }}"
+  tasks:
+    - name: Parse per-host plan data and write the manifest JSON
+      ansible.builtin.shell: |
+        python3 -c "
+        import glob, json, os
+        from datetime import datetime, timezone
+
+        hosts = {}
+        for path in sorted(glob.glob('/tmp/stand-patch-plan/*.txt')):
+            host = os.path.basename(path)[:-4]
+            lines = open(path, encoding='utf-8').read().splitlines()
+            os_label = lines[0][4:] if lines and lines[0].startswith('OS: ') else 'unknown'
+            body = lines[1:]
+            packages = []
+            if '---UPDATEINFO---' in body:
+                # Oracle Linux: dnf check-update above the marker, dnf
+                # updateinfo below -- join advisories to packages by NEVRA
+                # prefix (updateinfo has no separate package-name column).
+                sep = body.index('---UPDATEINFO---')
+                check_update, updateinfo = body[:sep], body[sep + 1:]
+                for line in check_update:
+                    parts = line.split()
+                    if len(parts) == 3 and '.' in parts[0]:
+                        packages.append({'name': parts[0].rsplit('.', 1)[0], 'version': parts[1]})
+                advisories = {}
+                for line in updateinfo:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        advisory_id, nevra = parts[0], parts[-1]
+                        for pkg in packages:
+                            if nevra.startswith(pkg['name'] + '-'):
+                                advisories.setdefault(pkg['name'], set()).add(advisory_id)
+                for pkg in packages:
+                    if pkg['name'] in advisories:
+                        pkg['advisories'] = sorted(advisories[pkg['name']])
+            else:
+                # Debian/Ubuntu: plain 'name version' lines.
+                for line in body:
+                    parts = line.split()
+                    if len(parts) == 2:
+                        packages.append({'name': parts[0], 'version': parts[1]})
+            hosts[host] = {
+                'os': os_label,
+                'packages': packages,
+                'counts': {
+                    'packages': len(packages),
+                    'advisories': sum(len(p.get('advisories', [])) for p in packages),
+                },
+            }
+
+        manifest = {
+            'env': '{{ env | default('stage') }}',
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'hosts': hosts,
+        }
+        out_path = '{{ out_base }}.json'
+        os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+        json.dump(manifest, open(out_path, 'w'), indent=2, sort_keys=True)
+        total = sum(h['counts']['packages'] for h in hosts.values())
+        print(f'patch-plan: {total} package(s) across {len(hosts)} host(s)')
+        "
+      changed_when: true
+      register: plan_result
+
+    - name: Show plan result
+      ansible.builtin.debug:
+        var: plan_result.stdout
+
+    - name: Render the HTML patch-plan report
+      ansible.builtin.command:
+        cmd: >
+          python3 {{ repo_root }}/scan/patch_plan_report.py
+          --manifest {{ out_base }}.json --html {{ out_base }}.html
+      changed_when: true
+
+    - name: Report done
+      ansible.builtin.debug:
+        msg: "Done: {{ out_base }}.json / {{ out_base }}.html"
