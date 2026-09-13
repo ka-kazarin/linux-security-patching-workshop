@@ -3,62 +3,106 @@
      A summary (overall + per-host severity counts) on top, one collapsed
      findings table per target below (AGENTS.md: lean, but the overall
      count-first structure was a direct fix for "one long unreadable
-     sheet" feedback from a real test run). */ -}}
+     sheet" feedback from a real test run).
+     The <style> block is a pasted copy of scan/report_style.py's BASE_CSS
+     (a Go template can't import Python) plus a few scan-specific rules —
+     keep the two in sync by eye so all reports share one look. */ -}}
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Trivy scan report</title>
 <style>
-  body { font-family: sans-serif; margin: 2rem; }
-  h2 { margin-top: 2rem; }
-  table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; }
-  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; font-size: 14px; }
-  th { background: #f2f2f2; }
-  .CRITICAL { color: #b3202c; font-weight: bold; }
-  .HIGH { color: #e06c00; font-weight: bold; }
-  .MEDIUM { color: #c9a400; }
-  .LOW { color: #3a7d44; }
-  #summary-table td, #summary-table th { text-align: center; }
-  #summary-table td:first-child, #summary-table th:first-child { text-align: left; }
-  #summary-total td { border-top: 2px solid #888; }
-  details.target-block { margin-bottom: 0.5rem; }
-  details.target-block summary { cursor: pointer; font-weight: bold; padding: 6px 0; }
+:root{--navy:#0e2439;--navy-2:#16324f;--cyan:#18c3e6;--ink:#0f1b28;
+--muted:#5a6b7b;--bg:#eef2f6;--card:#fff;--border:#e0e7ee;
+--ok:#30a46c;--warn:#e0b400;--bad:#e5484d;
+--CRITICAL:#e5484d;--HIGH:#f2820c;--MEDIUM:#e0b400;--LOW:#30a46c;--UNKNOWN:#8b96a5}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);line-height:1.5;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+a{color:#0f6f99}
+.wrap{max-width:1100px;margin:0 auto;padding:0 1.5rem 3rem}
+header{background:linear-gradient(135deg,var(--navy),var(--navy-2));color:#fff;
+padding:1.6rem 0 1.7rem;border-bottom:3px solid var(--cyan);margin-bottom:1.75rem}
+header .wrap{padding-bottom:0}
+h1{margin:0;font-size:1.5rem;letter-spacing:-.01em}
+.sub{margin:.3rem 0 0;color:#9fc7dd;font-size:.9rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;
+padding:1.1rem 1.2rem 1.3rem;box-shadow:0 1px 3px rgba(16,35,59,.06);margin-bottom:1.25rem}
+.card h2{margin:0 0 .6rem;font-size:.95rem;color:var(--navy);
+display:flex;align-items:center;gap:.45rem}
+.card h2::before{content:"";width:7px;height:7px;border-radius:50%;
+background:var(--cyan);display:inline-block}
+table{border-collapse:collapse;width:100%;font-size:.86rem}
+th,td{padding:.5rem .6rem;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:600;text-transform:uppercase;
+font-size:.72rem;letter-spacing:.03em}
+tbody tr:last-child td{border-bottom:none}
+.sev{font-weight:600}
+.sev.CRITICAL{color:var(--CRITICAL)} .sev.HIGH{color:var(--HIGH)}
+.sev.MEDIUM{color:var(--MEDIUM)} .sev.LOW{color:var(--LOW)} .sev.UNKNOWN{color:var(--UNKNOWN)}
+details{background:var(--card);border:1px solid var(--border);border-radius:10px;
+margin-bottom:.6rem;overflow:hidden}
+details summary{cursor:pointer;font-weight:600;padding:.7rem .9rem;color:var(--navy)}
+details[open] summary{border-bottom:1px solid var(--border)}
+details .inner{padding:.4rem .9rem .7rem}
+footer{color:var(--muted);font-size:.78rem;margin-top:1.75rem;text-align:center}
+footer code{background:#dde5ec;padding:.1rem .35rem;border-radius:4px}
+/* scan-specific */
+h2.section{color:var(--navy);font-size:1rem;margin:1.6rem 0 .7rem}
+#summary-table td,#summary-table th{text-align:center}
+#summary-table td:first-child,#summary-table th:first-child{text-align:left}
+#summary-total td{border-top:2px solid #cdd6df;font-weight:700;color:var(--ink)}
+.none{color:var(--muted);margin:.2rem 0}
 </style>
 </head>
 <body>
+<header><div class="wrap">
 <h1>Trivy scan report</h1>
+<p class="sub">OS packages &amp; app layer &middot; Slurm stand</p>
+</div></header>
+<div class="wrap">
 
+<section class="card">
 <h2>Summary</h2>
 <table id="summary-table">
   <thead><tr><th>Host</th><th>CRITICAL</th><th>HIGH</th><th>MEDIUM</th><th>LOW</th><th>UNKNOWN</th><th>Total</th></tr></thead>
   <tbody id="summary-body"></tbody>
   <tfoot><tr id="summary-total"><td><b>Total</b></td></tr></tfoot>
 </table>
+</section>
 
-<h2>Details (per host, click to expand)</h2>
+<h2 class="section">Details — per host, click to expand</h2>
 {{- range . }}
 <details class="target-block" data-target="{{ .Target }}">
   <summary>{{ .Target }}{{ if .Class }} ({{ .Class }}){{ end }} — {{ len .Vulnerabilities }} finding(s)</summary>
+  <div class="inner">
   {{- if .Vulnerabilities }}
   <table class="findings">
-    <tr><th>CVE</th><th>Package</th><th>Installed</th><th>Fixed in</th><th>Severity</th><th>Title</th></tr>
+    <thead><tr><th>CVE</th><th>Package</th><th>Installed</th><th>Fixed in</th><th>Severity</th><th>Title</th></tr></thead>
+    <tbody>
     {{- range .Vulnerabilities }}
     <tr data-severity="{{ .Severity }}">
       <td><a href="{{ .PrimaryURL }}">{{ .VulnerabilityID }}</a></td>
       <td>{{ .PkgName }}</td>
       <td>{{ .InstalledVersion }}</td>
       <td>{{ .FixedVersion }}</td>
-      <td class="{{ .Severity }}">{{ .Severity }}</td>
+      <td><span class="sev {{ .Severity }}">{{ .Severity }}</span></td>
       <td>{{ .Title }}</td>
     </tr>
     {{- end }}
+    </tbody>
   </table>
   {{- else }}
-  <p>No findings.</p>
+  <p class="none">No findings.</p>
   {{- end }}
+  </div>
 </details>
 {{- end }}
+
+<footer>Generated by <code>trivy</code> via <code>ansible/scan.yml</code> &middot; Slurm stand</footer>
+</div>
 
 <script>
 (function () {
@@ -85,9 +129,16 @@
     var counts = byHost[host];
     var total = severities.reduce(function (sum, s) { return sum + counts[s]; }, 0);
     var tr = document.createElement("tr");
-    [host].concat(severities.map(function (s) { return counts[s]; })).concat([total]).forEach(function (c) {
+    [host].concat(severities.map(function (s) { return counts[s]; })).concat([total]).forEach(function (c, i) {
       var td = document.createElement("td");
-      td.textContent = c;
+      if (i > 0 && i <= severities.length && c > 0) {
+        var span = document.createElement("span");
+        span.className = "sev " + severities[i - 1];
+        span.textContent = c;
+        td.appendChild(span);
+      } else {
+        td.textContent = c;
+      }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);

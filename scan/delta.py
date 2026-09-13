@@ -18,6 +18,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from report_style import PALETTE, page
+
 # Severity order, most severe first. Anything else buckets into UNKNOWN.
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 
@@ -133,40 +135,46 @@ def write_registry_csv(rows: list[dict], path: Path) -> None:
 def _svg_bars(before: dict[str, int], after: dict[str, int]) -> str:
     """Return an inline SVG grouped bar chart of counts per severity.
 
-    Each severity gets a "B" (before) and "A" (after) bar side by side —
-    the B/A tick plus the legend in write_html_chart is the fix for real
-    test feedback ("which column is before, which is after?").
+    Each severity gets a "before" (solid) and "after" (translucent) bar side
+    by side, with a value label above and a B/A tick below — the tick plus the
+    legend answer real test feedback ("which column is before, which is after?").
     """
-    palette = {"CRITICAL": "#b3202c", "HIGH": "#e06c00", "MEDIUM": "#c9a400",
-               "LOW": "#3a7d44", "UNKNOWN": "#7a7a7a"}
     peak = max([*before.values(), *after.values(), 1])
-    span, base, top, bar = 90, 250, 30, 26
-    parts = []
+    pad_l, pad_r, top, plot_h = 8, 8, 22, 170
+    bar, gap_ba, gap_grp = 24, 9, 40
+    base = top + plot_h
+    grp_w = 2 * bar + gap_ba
+    width = pad_l + len(SEVERITIES) * grp_w + (len(SEVERITIES) - 1) * gap_grp + pad_r
+    height = base + 40
+    parts = [f'<line x1="{pad_l}" y1="{base}" x2="{width - pad_r}" y2="{base}" '
+             f'stroke="#d7e0e8" stroke-width="1"/>']
     for i, sev in enumerate(SEVERITIES):
-        x = 40 + i * (span + 20)
+        gx = pad_l + i * (grp_w + gap_grp)
         for j, (label, counts) in enumerate((("before", before), ("after", after))):
-            h = (counts[sev] / peak) * (base - top)
-            bx = x + j * (bar + 6)
-            fill = palette[sev] if label == "before" else palette[sev] + "88"
+            n = counts[sev]
+            h = (n / peak) * plot_h
+            bx = gx + j * (bar + gap_ba)
+            opacity = "1" if label == "before" else ".45"
             parts.append(
-                f'<rect x="{bx}" y="{base - h:.0f}" width="{bar}" '
-                f'height="{h:.0f}" fill="{fill}"/>'
-                f'<text x="{bx + bar / 2:.0f}" y="{base - h - 6:.0f}" '
-                f'font-size="12" text-anchor="middle">{counts[sev]}</text>'
-                f'<text x="{bx + bar / 2:.0f}" y="{base + 12}" font-size="10" '
-                f'text-anchor="middle" fill="#555">{label[0].upper()}</text>')
+                f'<rect x="{bx}" y="{base - h:.1f}" width="{bar}" height="{h:.1f}" '
+                f'rx="3" fill="{PALETTE[sev]}" fill-opacity="{opacity}"/>'
+                f'<text x="{bx + bar / 2:.0f}" y="{base - h - 6:.0f}" font-size="12" '
+                f'font-weight="600" text-anchor="middle" fill="#0f1b28">{n}</text>'
+                f'<text x="{bx + bar / 2:.0f}" y="{base + 15}" font-size="10" '
+                f'text-anchor="middle" fill="#8b96a5">{label[0].upper()}</text>')
         parts.append(
-            f'<text x="{x + bar:.0f}" y="{base + 26}" font-size="12" '
-            f'text-anchor="middle">{sev}</text>')
-    return (f'<svg viewBox="0 0 {40 + len(SEVERITIES) * (span + 20)} 300" '
-            f'style="width:100%;height:auto;max-height:280px" '
-            f'xmlns="http://www.w3.org/2000/svg" font-family="sans-serif">'
-            + "".join(parts) + "</svg>")
+            f'<text x="{gx + grp_w / 2:.0f}" y="{base + 31}" font-size="11" '
+            f'font-weight="600" text-anchor="middle" fill="#5a6b7b">{sev}</text>')
+    return (f'<svg viewBox="0 0 {width} {height}" role="img" '
+            f'style="width:100%;height:auto;max-height:240px" '
+            f'xmlns="http://www.w3.org/2000/svg">' + "".join(parts) + "</svg>")
 
 
-def _chart_section(title: str, before: dict[str, int], after: dict[str, int]) -> str:
-    """One grid cell: <h2> + bar chart, reused for the overall total and each host."""
-    return f"<div class='chart-cell'><h2>{title}</h2>" + _svg_bars(before, after) + "</div>"
+def _chart_section(title: str, before: dict[str, int], after: dict[str, int],
+                   klass: str = "card") -> str:
+    """One card: <h2> + bar chart, reused for the overall total and each host."""
+    return (f"<section class='{klass}'><h2>{title}</h2>"
+            + _svg_bars(before, after) + "</section>")
 
 
 def write_html_chart(before: dict[str, int], after: dict[str, int],
@@ -174,7 +182,7 @@ def write_html_chart(before: dict[str, int], after: dict[str, int],
                      after_by_host: dict[str, dict[str, int]],
                      rows: list[dict], path: Path) -> None:
     """Render a self-contained HTML report: overall totals + a chart per
-    host (inline SVG, no external assets)."""
+    host (inline SVG + CSS, no external assets)."""
     fixed = sum(1 for r in rows if r["status"] == "fixed")
     new = sum(1 for r in rows if r["status"] == "new")
     remaining = sum(1 for r in rows if r["status"] == "remaining")
@@ -184,39 +192,43 @@ def write_html_chart(before: dict[str, int], after: dict[str, int],
         _chart_section(host, before_by_host.get(host, zero), after_by_host.get(host, zero))
         for host in all_hosts
     )
-    # Overall full-width, hosts in their own single row below (not one grid
-    # with everything in it): a fixed 2-1fr-column grid drifted into 3+ rows
-    # and needed scrolling as soon as prod hosts joined stage (5 cells,
-    # not 3) -- reported live. This way it's always exactly two rows, on
-    # stage-only (2 hosts) or the full profile (4 hosts) alike, sized to
-    # the actual host count so it stays on one screen without scrolling.
+    # Overall full-width, hosts in their own responsive grid below: sized to
+    # the actual host count (auto-fit) so it stays on one screen without
+    # horizontal scroll on stage-only (2 hosts) or the full profile (4) alike.
     host_columns = max(len(all_hosts), 1)
+    # Status pills use their OWN palette (grey / violet / blue), deliberately
+    # NOT the red-orange-yellow-green severity ramp the bars use — mixing the
+    # two reads as "green = good severity". fixed=grey (done, at rest),
+    # new=violet (arrived, needs a look), remaining=blue (still open).
+    extra_css = (f".host-grid{{display:grid;gap:1.25rem;"
+                 f"grid-template-columns:repeat({host_columns},minmax(0,1fr))}}"
+                 "@media(max-width:640px){.host-grid{grid-template-columns:1fr}}"
+                 ".pill.fixed{border-left-color:#8b96a5}.pill.fixed .n{color:#5a6b7b}"
+                 ".pill.new{border-left-color:#8b5cf6}.pill.new .n{color:#7c3aed}"
+                 ".pill.remaining{border-left-color:#3b82c4}.pill.remaining .n{color:#2f6fb0}")
+    body = (
+        "<div class='stats'>"
+        f"<div class='pill fixed'><span class='n'>{fixed}</span><span class='l'>fixed</span></div>"
+        f"<div class='pill remaining'><span class='n'>{remaining}</span><span class='l'>remaining</span></div>"
+        f"<div class='pill new'><span class='n'>{new}</span><span class='l'>new</span></div>"
+        "</div>"
+        "<p class='legend'>"
+        "<b>fixed</b> gone after patching &middot; <b>remaining</b> still open "
+        "&middot; <b>new</b> present only in the after-scan (a package the patch "
+        "pulled in at a newer version, carrying its own advisories &mdash; not a "
+        "vulnerability the patch created).</p>"
+        "<p class='legend'>"
+        "<span class='sw'></span>before"
+        "<span class='sw after'></span>after"
+        "&mdash; each severity shows two bars (before solid, after translucent), "
+        "also marked B / A.</p>"
+        + _chart_section("Overall — all hosts", before, after, "card overall")
+        + f"<div class='host-grid'>{per_host_sections}</div>")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
-        "<title>Scan delta</title>"
-        "<style>"
-        "body{font-family:sans-serif;margin:1.5rem}"
-        f".host-grid{{display:grid;grid-template-columns:repeat({host_columns},1fr);"
-        "gap:0.5rem 1.5rem;margin-top:0.5rem}}"
-        ".chart-cell h2{margin:0 0 0.25rem;font-size:15px}"
-        "</style>"
-        "</head><body>"
-        "<h1>Scan delta: before / after patching</h1>"
-        f"<p>Fixed: <b>{fixed}</b> &middot; New: <b>{new}</b> &middot; "
-        f"Remaining: <b>{remaining}</b></p>"
-        "<p><b>Legend:</b> "
-        "<span style='display:inline-block;width:14px;height:14px;"
-        "background:#555;vertical-align:middle;margin:0 4px'></span>before"
-        "&nbsp;&nbsp;"
-        "<span style='display:inline-block;width:14px;height:14px;"
-        "background:#55555588;vertical-align:middle;margin:0 4px'></span>after"
-        " &mdash; each bar is also marked B/A. Each severity column shows two"
-        " bars: before (left, solid) and after (right, translucent).</p>"
-        + _chart_section("Overall (all hosts)", before, after)
-        + f"<div class='host-grid'>{per_host_sections}</div>"
-        + "<p style='color:#666;font-size:12px'>Generated by scan/delta.py.</p>"
-        "</body></html>",
+        page("Scan delta",
+             "Vulnerability findings before / after patching",
+             body, "scan/delta.py", extra_css),
         encoding="utf-8")
 
 

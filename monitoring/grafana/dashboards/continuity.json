@@ -36,8 +36,8 @@
             {
               "type": "value",
               "options": {
-                "0": { "text": "DOWN", "index": 0 },
-                "1": { "text": "UP", "index": 1 }
+                "0": { "text": "Down", "color": "red", "index": 0 },
+                "1": { "text": "OK", "color": "green", "index": 1 }
               }
             }
           ],
@@ -48,7 +48,8 @@
       "options": {
         "mergeValues": true,
         "showValue": "never",
-        "rowHeight": 0.9
+        "rowHeight": 0.9,
+        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" }
       },
       "targets": [
         { "expr": "probe_success", "legendFormat": "{{instance}}" }

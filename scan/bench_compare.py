@@ -22,6 +22,8 @@ import json
 import sys
 from pathlib import Path
 
+from report_style import page
+
 DEFAULT_TOLERANCE_PCT = 20.0
 
 
@@ -115,10 +117,50 @@ def print_table(rows: list[tuple[str, float, float, float, str]]) -> None:
         print(fmt_row(row))
 
 
+def write_html_report(rows: list[tuple[str, float, float, float, str]],
+                      tolerance: float, path: Path) -> None:
+    """Render a self-contained HTML load-baseline report in the shared style
+    (scan/report_style.py) — a before/after/delta table with an OK/regression
+    verdict per metric. Same visual identity as the scan delta report."""
+    regressions = sum(1 for r in rows if r[4] == "REGRESSION")
+    reg_class = "bad" if regressions else "good"
+    trows = []
+    for label, b, a, delta, verdict in rows:
+        ok = verdict == "OK"
+        trows.append(
+            f"<tr><td>{label}</td>"
+            f"<td class='num'>{b:.2f}</td>"
+            f"<td class='num'>{a:.2f}</td>"
+            f"<td class='num {'delta-good' if ok else 'delta-bad'}'>{delta:+.1f}%</td>"
+            f"<td><span class='badge {'ok' if ok else 'bad'}'>"
+            f"{'OK' if ok else '⚠ REGRESSION'}</span></td></tr>")
+    body = (
+        "<div class='stats'>"
+        f"<div class='pill {reg_class}'><span class='n'>{regressions}</span>"
+        f"<span class='l'>regression{'' if regressions == 1 else 's'}</span></div>"
+        f"<div class='pill'><span class='n'>{tolerance:.0f}%</span>"
+        "<span class='l'>tolerance</span></div>"
+        "</div>"
+        "<p class='legend'>Smoke-level load baseline &mdash; not a rigorous "
+        "benchmark. A metric is flagged only if it moved unfavourably by more "
+        "than the tolerance (single-VM noise floor sits comfortably under it).</p>"
+        "<section class='card'><h2>Before / after &mdash; throughput &amp; latency</h2>"
+        "<table><thead><tr><th>Metric</th><th class='num'>Before</th>"
+        "<th class='num'>After</th><th class='num'>&Delta;</th><th>Verdict</th>"
+        f"</tr></thead><tbody>{''.join(trows)}</tbody></table></section>")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        page("Load baseline", "Performance before / after patching",
+             body, "scan/bench_compare.py"),
+        encoding="utf-8")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compare two bench.yml load-baseline reports.")
     parser.add_argument("--before", type=Path, default=Path("results/bench-before.json"))
     parser.add_argument("--after", type=Path, default=Path("results/bench-after.json"))
+    parser.add_argument("--html", type=Path, default=Path("results/bench.html"),
+                        help="self-contained HTML report (default: results/bench.html)")
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE_PCT,
                         help=f"allowed drift in %% before flagging a regression (default: {DEFAULT_TOLERANCE_PCT})")
     return parser
@@ -138,12 +180,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"Load baseline comparison (smoke-level, tolerance {args.tolerance:.0f}%):\n")
     print_table(rows)
+    write_html_report(rows, args.tolerance, args.html)
     regressions = sum(1 for r in rows if r[4] == "REGRESSION")
     print()
     if regressions:
         print(f"bench: {regressions} metric(s) outside tolerance -- see ⚠ REGRESSION above")
     else:
         print("bench: no significant regression detected")
+    print(f"  HTML: {args.html}")
     return 0
 
 

@@ -128,8 +128,8 @@ bench-after: ## load baseline AFTER patching (ab + mysqlslap on the live VMs via
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after)
 
-bench: ## compare the load baseline -> before/after/delta table, flags regressions past tolerance
-	$(call run,python3 scan/bench_compare.py --before results/bench-before.json --after results/bench-after.json)
+bench: ## compare the load baseline -> before/after/delta table + HTML report, flags regressions past tolerance
+	$(call run,python3 scan/bench_compare.py --before results/bench-before.json --after results/bench-after.json --html results/bench.html)
 
 # --- Patching and verification (Ansible + pytest) ------------------------------
 
