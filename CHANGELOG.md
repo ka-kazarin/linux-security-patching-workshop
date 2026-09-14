@@ -9,6 +9,8 @@ what a student/user of the stand sees and uses.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-15
+
 ### Added
 - Repo skeleton and navigation: `README.md` (English, links to
   `docs/en/README.md` / `docs/ru/README.md`), `SECURITY.md` with the
