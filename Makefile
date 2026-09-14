@@ -23,11 +23,13 @@ SEVERITY ?= CRITICAL,HIGH
 CMD ?= id
 # Load-baseline methodology (make bench-before/bench-after): 1 warmup run
 # (discarded) + BENCH_RUNS timed runs of BENCH_DURATION seconds each, sampled
-# every BENCH_INTERVAL seconds. Defaults are the boring, honest numbers for a
-# real run (warmup + 2x180s takes a while) -- override on the command line
-# for a quick mechanics check, e.g. BENCH_DURATION=20 BENCH_WARMUP=10.
-BENCH_WARMUP   ?= 60
-BENCH_DURATION ?= 180
+# every BENCH_INTERVAL seconds. The web host runs nginx then php sequentially,
+# so a full run is ~2*(warmup + RUNS*duration); at 30 + 2*90s that's ~7 min
+# (db runs mysql in parallel, well under that). 90s * 2 still yields ~18
+# samples/metric for a stable median/p90. Override for a quick mechanics
+# check, e.g. BENCH_DURATION=20 BENCH_WARMUP=10.
+BENCH_WARMUP   ?= 30
+BENCH_DURATION ?= 90
 BENCH_RUNS     ?= 2
 BENCH_INTERVAL ?= 10
 
@@ -120,33 +122,40 @@ creds: ## print demo credentials (WordPress admin, MySQL) -- intentionally weak,
 
 # --- Scanning ------------------------------------------------------------------
 
+# Scan/bench output files are tagged with ENV (scan-before-stage.json, ...)
+# so a stage run and a prod run never overwrite each other -- the delta of an
+# env is that env's own before vs after, and mixing stage/prod findings into
+# one report was a real bug (reported live). (Unlike patch-plan, which is one
+# shared file on purpose: a scan delta is per-env, a patch plan is not.)
 scan-before: ## scan BEFORE patching (Trivy on the live VMs via Ansible -> HTML report, ENV=stage|prod|all)
 	$(call check_scan_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/scan.yml -e env=$(ENV) -e out=results/scan-before -e vuln_severities=$(SEVERITY))
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/scan.yml -e env=$(ENV) -e out=results/scan-before-$(ENV) -e vuln_severities=$(SEVERITY))
 
 scan-after: ## scan AFTER patching (Trivy on the live VMs via Ansible -> HTML report, ENV=stage|prod|all)
 	$(call check_scan_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/scan.yml -e env=$(ENV) -e out=results/scan-after -e vuln_severities=$(SEVERITY))
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/scan.yml -e env=$(ENV) -e out=results/scan-after-$(ENV) -e vuln_severities=$(SEVERITY))
 
-scan-delta: ## compute the scan delta -> CSV (Registry) + HTML chart
-	$(call run,python3 scan/delta.py --before results/scan-before.json --after results/scan-after.json --csv results/delta.csv --html results/delta.html)
+scan-delta: ## compute the scan delta for ENV -> CSV (Registry) + HTML chart (ENV=stage|prod|all)
+	$(call check_scan_env)
+	$(call run,python3 scan/delta.py --before results/scan-before-$(ENV).json --after results/scan-after-$(ENV).json --csv results/delta-$(ENV).csv --html results/delta-$(ENV).html)
 
 clean-results: ## remove generated demo artifacts under results (keeps README.md)
-	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json results/patch-plan*.json results/patch-plan*.html)
+	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json results/bench-*.html results/patch-plan*.json results/patch-plan*.html)
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
 # Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
 
-bench-before: ## load baseline BEFORE patching (warmup+2x180s runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
+bench-before: ## load baseline BEFORE patching (warmup+2 timed runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
 	$(call check_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-before -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-before-$(ENV) -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
 
-bench-after: ## load baseline AFTER patching (warmup+2x180s runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
+bench-after: ## load baseline AFTER patching (warmup+2 timed runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
 	$(call check_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after-$(ENV) -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
 
-bench-delta: ## compare the load baseline -> before/after/delta table + HTML report (median+p90, sparklines), flags regressions past tolerance
-	$(call run,python3 scan/bench_compare.py --before results/bench-before.json --after results/bench-after.json --html results/bench.html)
+bench-delta: ## compare the load baseline for ENV -> before/after/delta table + HTML report (median+p90, sparklines), flags regressions (ENV=stage|prod)
+	$(call check_env)
+	$(call run,python3 scan/bench_compare.py --before results/bench-before-$(ENV).json --after results/bench-after-$(ENV).json --html results/bench-$(ENV).html)
 
 # --- Patching and verification (Ansible + pytest) ------------------------------
 

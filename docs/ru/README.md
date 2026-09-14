@@ -64,7 +64,9 @@ vagrant box add bento/oraclelinux-9  /путь/к/скачанному/oraclelin
    уехать), патчит app-layer CVE (WordPress), делает reboot + чистку старого
    ядра и перепрогоняет `make verify ENV=prod`. Без протестированного
    stage-манифеста отказывает с понятной ошибкой.
-7. `make scan-delta` — дельта сканов, выгрузка в реестр.
+7. `make scan-delta ENV=stage` — дельта сканов (before vs after этой среды),
+   выгрузка в реестр. Вывод сканов/бенчей тегируется средой, поэтому дельты
+   stage и prod не смешиваются.
 
 Живой эксплойт и виртуальный патч: `make attack` → `make waf-on` →
 `make attack` (403) → `make patch-wordpress` (настоящий фикс) → `make waf-off`

@@ -64,7 +64,9 @@ imported and never touches the network. Link to the images: _to be added_.
    stage, not a fresh mirror resolve that could've drifted since), patches
    the WordPress core CVE, reboots + cleans up the old kernel, then reruns
    `make verify ENV=prod`. Refuses to run without a tested stage manifest.
-7. `make scan-delta` — scan delta, exported for the registry.
+7. `make scan-delta ENV=stage` — scan delta (that env's before vs after),
+   exported for the registry. Scan/bench outputs are ENV-tagged, so stage and
+   prod deltas never mix.
 
 Live exploit and virtual patching: `make attack` → `make waf-on` →
 `make attack` (403) → `make patch-wordpress` (the real fix) → `make waf-off`

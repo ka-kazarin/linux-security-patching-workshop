@@ -158,4 +158,16 @@ what a student/user of the stand sees and uses.
   every host of the group unreachable means the stand was never brought up
   and the whole run skips cleanly (exit 0), same as before. The previous
   external HTTP smoke (`tests/test_functional.py`, `requests`) stays as-is,
-  checking the same page from outside the VM over the network.
+  checking the same page from outside the VM over the network. The php-fpm
+  unit lookup uses `systemctl list-unit-files` (not `list-units`), so a
+  *stopped* php-fpm still resolves its name and fails honestly with "not
+  running" instead of "not installed". The Ansible inventory now also sets
+  `UserKnownHostsFile=/dev/null` so recreating a VM (new host key) never
+  wedges connections with "REMOTE HOST IDENTIFICATION HAS CHANGED".
+- Scan and bench outputs are tagged with ENV (`scan-before-<env>.json`,
+  `delta-<env>.html`, `bench-<env>.html`, ...) so a stage run and a prod run
+  no longer overwrite each other; each delta is that env's own before vs
+  after. `make scan-delta` / `make bench-delta` take `ENV=` accordingly.
+- Load baseline defaults trimmed (`make bench-before/after`): warmup 30s +
+  2×90s per metric (~7 min end to end, was ~14–20), still ~18 samples per
+  metric for a stable median/p90; override via `BENCH_*` for longer runs.

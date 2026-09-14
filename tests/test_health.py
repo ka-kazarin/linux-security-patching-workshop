@@ -109,12 +109,19 @@ def db_host(request: pytest.FixtureRequest, reachability: dict[str, tuple[bool, 
 def _php_fpm_service(host) -> str:
     """The php*-fpm unit name carries the PHP version the distro shipped
     (e.g. php8.5-fpm) -- ask systemd live instead of hardcoding a version
-    that will drift the next time the base image updates."""
+    that will drift the next time the base image updates.
+
+    list-unit-FILES, not list-units: `list-units` only shows currently
+    loaded units, so a stopped php-fpm drops off it and the name lookup would
+    wrongly read as "not installed" (caught live). `list-unit-files` lists
+    installed unit files whatever their run state, so the name resolves even
+    when the service is down -- and then the is_running check below can fail
+    honestly with "<unit> is not running" instead of "not installed"."""
     out = host.run(
-        "systemctl list-units --type=service --no-legend --plain 'php*-fpm.service'"
+        "systemctl list-unit-files --no-legend --plain 'php*-fpm.service'"
     )
     lines = out.stdout.strip().splitlines()
-    assert lines, "no php*-fpm service unit found (php-fpm not installed?)"
+    assert lines, "no php*-fpm unit file found (php-fpm not installed?)"
     return lines[0].split()[0]
 
 

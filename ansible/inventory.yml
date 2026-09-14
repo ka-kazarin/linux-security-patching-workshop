@@ -15,7 +15,13 @@
 all:
   vars:
     ansible_user: vagrant
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+    # UserKnownHostsFile=/dev/null alongside StrictHostKeyChecking=no: the VMs
+    # are recreated often (destroy + up), which changes their host keys. A
+    # changed key already recorded in ~/.ssh/known_hosts makes ssh REFUSE the
+    # connection ("REMOTE HOST IDENTIFICATION HAS CHANGED") even with strict
+    # checking off -- caught live as a spurious test/patch failure. Not
+    # persisting host keys sidesteps it (host-only network, throwaway VMs).
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     # auto_silent: still auto-detects the interpreter per host (Ubuntu and
     # Oracle Linux ship different python3 versions) but without the "future
     # python install could change this" warning on every single run.
