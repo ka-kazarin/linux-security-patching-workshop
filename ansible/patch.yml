@@ -8,9 +8,11 @@
   become: true
   vars:
     # Frozen manifest from `make patch-plan` (ansible/patch-plan.yml, see its
-    # header). Override with -e plan_file=... so `make rollout` can point
-    # prod at the manifest that was actually tested on stage.
-    plan_file: "results/patch-plan-{{ env | default('stage') }}.json"
+    # header). One shared file, no env suffix: the plan is collected against
+    # prod, tested on stage, and rolled out to prod -- every invocation reads
+    # the same results/patch-plan.json. Override with -e plan_file=... only
+    # for a one-off.
+    plan_file: "results/patch-plan.json"
   tasks:
     - name: Install unattended-upgrades (Debian/Ubuntu)
       ansible.builtin.apt:

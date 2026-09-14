@@ -1,12 +1,16 @@
 ---
 # Computes pending SECURITY updates as {name, version} per host, WITHOUT
 # installing anything -- freezes the exact set patch.yml's manifest-aware
-# install path (results/patch-plan-<env>.json) applies later, so the set
-# tested on stage is the set that ships to prod (docs/en/README.md, "make
-# rollout"). Same "gather on hosts, merge+render on the controller" shape
-# as scan.yml. Vars: env=stage|prod (default stage), out=path without
-# extension (default results/patch-plan-{{ env }}) -- .json and .html get
-# appended.
+# install path applies later. Writes a SINGLE results/patch-plan.json (no env
+# suffix): the intended flow is collect the plan against prod's real pending
+# set (`make patch-plan ENV=prod`), test that same plan on stage (`make patch
+# ENV=stage`), then ship it to prod (`make rollout`) -- one file, one plan,
+# every command reads it. env here only picks which hosts to scan; the
+# manifest records it in an `env` field but the filename stays generic (like
+# scan-before.html / bench.html). Same "gather on hosts, merge+render on the
+# controller" shape as scan.yml. Vars: env=stage|prod (default stage),
+# out=path without extension (default results/patch-plan) -- .json/.html
+# get appended.
 - name: Reset patch-plan workspace on the controller
   hosts: localhost
   connection: local
@@ -57,46 +61,46 @@
         mode: "0644"
       when: ansible_facts['os_family'] == "Debian"
 
-    - name: Dry-run security-only upgrade to list pending packages (Debian/Ubuntu)
-      ansible.builtin.command: unattended-upgrade --dry-run -v
-      register: uu_dryrun
-      changed_when: false
-      when: ansible_facts['os_family'] == "Debian"
-
-    - name: Extract pending package names from the dry-run (Debian/Ubuntu)
-      ansible.builtin.set_fact:
-        deb_pending_pkgs: >-
-          {{ (uu_dryrun.stdout.split('Packages that will be upgraded:')[1].split('\n')[0].strip().split()
-              if (uu_dryrun.stdout is defined and 'Packages that will be upgraded:' in uu_dryrun.stdout)
-              else []) }}
-      when: ansible_facts['os_family'] == "Debian"
-
-    # apt-cache policy, not the dry-run output itself: unattended-upgrade
-    # only ever prints package NAMES, never the version it would install --
-    # Candidate is exactly what apt resolves a plain `apt-get install
-    # <pkg>` to, the same source patch.yml's real install goes through.
-    - name: Look up candidate versions for pending packages (Debian/Ubuntu)
-      ansible.builtin.shell: |
-        set -o pipefail
-        for pkg in {{ deb_pending_pkgs | join(' ') }}; do
-          ver=$(apt-cache policy "$pkg" | awk '/Candidate:/{print $2; exit}')
-          echo "$pkg $ver"
-        done
+    # Machine-readable, not the prose of `unattended-upgrade -v`: that free
+    # text mixed the package list with its own log tail (".. All upgrades
+    # installed", "The list of kept packages can't be calculated .."), and
+    # the stray apostrophe in that tail broke the shell. `apt-get -s
+    # dist-upgrade` instead prints one `Inst <pkg> [<old>] (<new> <origin>
+    # [<arch>])` line per package -- keep only -security-pocket lines and
+    # read <new> (exactly the version `apt-get install <pkg>=<new>` would
+    # pull, the same path patch.yml's real install takes) straight off the
+    # line. dist-upgrade (not upgrade) so a security kernel/meta bump that
+    # pulls a new package is captured; only Inst lines are taken, so any Remv
+    # is ignored (old kernels are handled by patch-reboot).
+    - name: List pending SECURITY upgrades as "name version" (Debian/Ubuntu)
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          LANG=C apt-get -s dist-upgrade 2>/dev/null | awk '
+            /^Inst / && /-security/ {
+              pkg = $2
+              ver = ""
+              for (i = 3; i <= NF; i++) if ($i ~ /^\(/) { ver = substr($i, 2); break }
+              if (ver != "") print pkg " " ver
+            }'
+        executable: /bin/bash
       register: deb_pkg_versions
       changed_when: false
-      when:
-        - ansible_facts['os_family'] == "Debian"
-        - deb_pending_pkgs | length > 0
+      when: ansible_facts['os_family'] == "Debian"
 
     # Self-describing plain text, one "name version" pair per line -- parsed
     # on the controller in the final play. No ---UPDATEINFO--- marker (see
     # the Oracle Linux side below) is how the parser tells the two formats
-    # apart.
+    # apart. Write deb_pkg_versions.stdout DIRECTLY (it already has real
+    # newlines from awk): `stdout_lines | join('\n')` renders '\n' as a
+    # literal backslash-n inside a `content: |` block, collapsing the whole
+    # list onto one line the parser then can't read (caught live -- the
+    # Oracle side never hit this because it writes .stdout directly too).
     - name: Write the pending-packages list to the controller workspace (Debian/Ubuntu)
       ansible.builtin.copy:
         content: |
           OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
-          {{ (deb_pkg_versions.stdout_lines | default([])) | join('\n') }}
+          {{ deb_pkg_versions.stdout | default('') }}
         dest: /tmp/stand-patch-plan/{{ inventory_hostname }}.txt
       delegate_to: localhost
       become: false
@@ -144,7 +148,7 @@
     # was invoked from (same gotcha as scan.yml) -- every path below is
     # absolute via playbook_dir plus a walk up to the repo root.
     repo_root: "{{ playbook_dir }}/.."
-    out_base: "{{ repo_root }}/{{ out | default('results/patch-plan-' + (env | default('stage'))) }}"
+    out_base: "{{ repo_root }}/{{ out | default('results/patch-plan') }}"
   tasks:
     - name: Parse per-host plan data and write the manifest JSON
       ansible.builtin.shell: |
@@ -165,10 +169,23 @@
                 # prefix (updateinfo has no separate package-name column).
                 sep = body.index('---UPDATEINFO---')
                 check_update, updateinfo = body[:sep], body[sep + 1:]
+                seen = set()
                 for line in check_update:
+                    # dnf check-update appends an 'Obsoleting Packages' section
+                    # listing obsoleting/obsoleted version PAIRS -- each a
+                    # 3-column line that is NOT a pending update. Stop before
+                    # it, else the plan collects several versions of the same
+                    # package and 'dnf install' then refuses with 'cannot
+                    # install both grub2-tools-<v1> and grub2-tools-<v2>'
+                    # (caught live). Dedup by name too, defensively.
+                    if line.strip().startswith('Obsoleting'):
+                        break
                     parts = line.split()
                     if len(parts) == 3 and '.' in parts[0]:
-                        packages.append({'name': parts[0].rsplit('.', 1)[0], 'version': parts[1]})
+                        name = parts[0].rsplit('.', 1)[0]
+                        if name not in seen:
+                            seen.add(name)
+                            packages.append({'name': name, 'version': parts[1]})
                 advisories = {}
                 for line in updateinfo:
                     parts = line.split()

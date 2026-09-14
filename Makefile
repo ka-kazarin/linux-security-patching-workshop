@@ -93,9 +93,14 @@ init: ## create a local venv with test dependencies (needed for make verify)
 	$(call run,python3 -m venv $(VENV_DIR) && $(VENV_DIR)/bin/pip install -q -U pip -r requirements-dev.txt)
 
 # --- Stand (Vagrant) ----------------------------------------------------------
+# up/up-lite are EXPLICIT about the profile (STAND_PROFILE=full|lite) and the
+# Vagrantfile persists it to .vagrant/stand_profile -- so a later bare
+# `vagrant provision`/`reload` (no env) falls back to whatever was last brought
+# up. Without the explicit STAND_PROFILE here, `make up` would inherit a "lite"
+# marker left by a previous `make up-lite` and quietly bring up only 3 VMs.
 
 up: ## bring up the full stand (5 VMs: stage + prod + mon)
-	$(call run,cd $(STAND_DIR) && vagrant up)
+	$(call run,cd $(STAND_DIR) && STAND_PROFILE=full vagrant up)
 
 up-lite: ## bring up the lightweight stand (3 VMs: stage + mon)
 	$(call run,cd $(STAND_DIR) && STAND_PROFILE=lite vagrant up)
@@ -127,7 +132,7 @@ scan-delta: ## compute the scan delta -> CSV (Registry) + HTML chart
 	$(call run,python3 scan/delta.py --before results/scan-before.json --after results/scan-after.json --csv results/delta.csv --html results/delta.html)
 
 clean-results: ## remove generated demo artifacts under results (keeps README.md)
-	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json results/patch-plan-*.json results/patch-plan-*.html)
+	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json results/patch-plan*.json results/patch-plan*.html)
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
 # Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
@@ -145,11 +150,11 @@ bench-delta: ## compare the load baseline -> before/after/delta table + HTML rep
 
 # --- Patching and verification (Ansible + pytest) ------------------------------
 
-patch-plan: ## freeze pending SECURITY updates as {package: version} -> manifest + HTML report, installs nothing (ENV=stage|prod)
+patch-plan: ## freeze pending SECURITY updates -> results/patch-plan.json + HTML, installs nothing (collect against ENV=prod, then test on stage)
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-plan.yml -e env=$(ENV))
 
-patch: ## apply OS/middleware patches -- exact versions from results/patch-plan-<ENV>.json if it exists, else the current security pocket (ENV=stage|prod)
+patch: ## apply OS/middleware patches -- exact versions from results/patch-plan.json if it exists, else the current security pocket (ENV=stage|prod)
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=$(ENV))
 
@@ -182,15 +187,16 @@ else
 endif
 
 # Hard env=prod throughout, deliberately not ENV-driven like the targets
-# above: rollout has exactly one direction (stage -> prod), never the
-# reverse. Applies the FROZEN stage manifest to prod (parity: prod gets the
-# exact package/version set already tested on stage, not a fresh mirror
-# resolve that could've drifted since), then the app-layer patch, kernel
-# reboot cleanup, and a final smoke check -- one operation instead of four
-# manual steps a presenter could run out of order.
-rollout: ## roll out the STAGE-tested patch-plan to prod: patch -> patch-wordpress -> patch-reboot -> verify (hard env=prod, needs `make patch-plan ENV=stage` tested first)
-	@test -f results/patch-plan-stage.json || { printf "$(RED)✗ no frozen stage patch-plan (results/patch-plan-stage.json) -- run 'make patch-plan ENV=stage', test it on stage, then retry$(NC)\n" >&2; exit 1; }
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=prod -e plan_file=results/patch-plan-stage.json)
+# above: rollout has exactly one direction (-> prod), never the reverse.
+# Applies the FROZEN patch-plan to prod (parity: prod gets the exact
+# package/version set that was frozen and tested, not a fresh mirror resolve
+# that could've drifted since), then the app-layer patch, kernel reboot
+# cleanup, and a final smoke check -- one operation instead of four manual
+# steps a presenter could run out of order. patch.yml defaults plan_file to
+# results/patch-plan.json, so no -e override is needed here.
+rollout: ## roll out the frozen patch-plan to prod: patch -> patch-wordpress -> patch-reboot -> verify (hard env=prod, needs a patch-plan tested on stage first)
+	@test -f results/patch-plan.json || { printf "$(RED)✗ no frozen patch-plan (results/patch-plan.json) -- run 'make patch-plan ENV=prod', test it via 'make patch ENV=stage' + 'make verify ENV=stage', then retry$(NC)\n" >&2; exit 1; }
+	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=prod)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-wordpress.yml -e env=prod)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/reboot-cleanup.yml -e env=prod)
 	$(MAKE) verify ENV=prod

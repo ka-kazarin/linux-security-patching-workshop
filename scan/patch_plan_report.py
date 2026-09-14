@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Render the HTML report for a frozen patch-plan manifest.
 
-Reads the JSON manifest ``ansible/patch-plan.yml`` writes (results/patch-
-plan-<env>.json: per-host pending SECURITY package/version pairs, nothing
-installed yet) and renders it in the stand's shared report style
+Reads the JSON manifest ``ansible/patch-plan.yml`` writes
+(results/patch-plan.json: per-host pending SECURITY package/version pairs,
+nothing installed yet) and renders it in the stand's shared report style
 (``report_style.py``) -- one card per host with a package -> version ->
 advisory table, "packages / advisories" pill counters answering "what will
 this close, and how much of it."
@@ -39,30 +39,31 @@ def load_manifest(path: Path) -> dict:
 
 
 def _host_section(host: str, data: dict) -> str:
-    """One card: host name/OS + its package table, or an empty-state line
-    when the host has zero pending security packages (already up to date,
-    not an error)."""
+    """One collapsible per-host block: the summary always shows host/OS and
+    the package/advisory counts; expanding reveals the package table (or an
+    empty-state line when the host has zero pending security packages --
+    already up to date, not an error). Collapsed by default so a 100+-package
+    plan stays scannable."""
     packages = data.get("packages", [])
     counts = data.get("counts", {"packages": len(packages), "advisories": 0})
+    n_pkg, n_adv = counts.get("packages", 0), counts.get("advisories", 0)
     if not packages:
-        body = "<p class='legend'>No pending security updates — already up to date.</p>"
+        inner = "<p class='legend'>No pending security updates — already up to date.</p>"
     else:
         rows = "".join(
             f"<tr><td>{p['name']}</td><td>{p['version']}</td>"
             f"<td>{', '.join(p.get('advisories', [])) or '&mdash;'}</td></tr>"
             for p in packages
         )
-        body = (
+        inner = (
             "<table><thead><tr><th>Package</th><th>Version</th>"
             f"<th>Advisory</th></tr></thead><tbody>{rows}</tbody></table>"
         )
     return (
-        f"<section class='card'><h2>{host} <span class='sub-os'>({data.get('os', 'unknown')})</span></h2>"
-        "<div class='stats'>"
-        f"<div class='pill'><span class='n'>{counts.get('packages', 0)}</span><span class='l'>packages</span></div>"
-        f"<div class='pill'><span class='n'>{counts.get('advisories', 0)}</span><span class='l'>advisories</span></div>"
-        "</div>"
-        + body + "</section>"
+        f"<details class='host'><summary>{host} "
+        f"<span class='sub-os'>({data.get('os', 'unknown')})</span> &middot; "
+        f"<b>{n_pkg}</b> package(s), <b>{n_adv}</b> advisory(ies)</summary>"
+        f"<div class='inner'>{inner}</div></details>"
     )
 
 

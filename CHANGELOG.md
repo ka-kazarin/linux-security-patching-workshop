@@ -108,44 +108,42 @@ what a student/user of the stand sees and uses.
   committed. The fallback still works — the presenter keeps the last good
   run on disk — it just no longer lives in git history.
 - `make patch-plan ENV=stage|prod` (`ansible/patch-plan.yml`): freezes pending
-  **security** updates as exact `{name, version}` pairs per host into
-  `results/patch-plan-<env>.json`, without installing anything — Debian/
-  Ubuntu via `unattended-upgrade --dry-run` (same security-only allowlist
-  `patch.yml` applies for real) plus `apt-cache policy` for candidate
-  versions, Oracle Linux via `dnf check-update --security` +
-  `dnf updateinfo list security` for versions and advisory IDs. Solves a real
-  drift problem: between patching stage today and rolling out to prod
-  tomorrow, a plain `apt/dnf upgrade` can resolve a *different* set as new
-  updates land on the mirror in between — the manifest is what makes "prod
-  gets exactly what was tested on stage" a fact instead of a hope. Renders
-  `results/patch-plan-<env>.html` in the shared report style
-  (`scan/patch_plan_report.py`) — a package/version/advisory table per host
-  with packages/advisories pill counters.
+  **security** updates as exact `{name, version}` pairs per host into a single
+  `results/patch-plan.json` (no env suffix — like `scan-before.html`), without
+  installing anything. Debian/Ubuntu via `apt-get -s dist-upgrade` filtered to
+  the `-security` pocket (machine-readable `Inst` lines, versions read straight
+  off); Oracle Linux via `dnf check-update --security` +
+  `dnf updateinfo list security` for versions and advisory IDs (ELSA). Solves a
+  real drift problem: between freezing the plan and rolling it out, a plain
+  `apt/dnf upgrade` can resolve a *different* set as new updates land on the
+  mirror — the manifest makes "prod gets exactly what was tested" a fact, not a
+  hope. Intended flow: collect the plan against prod's real pending set
+  (`make patch-plan ENV=prod`), test it on stage (`make patch ENV=stage` +
+  `make verify ENV=stage`), then ship it (`make rollout`) — one file, every
+  command reads it. Renders `results/patch-plan.html` in the shared report
+  style (`scan/patch_plan_report.py`) — a collapsible per-host section with a
+  package/version/advisory table and packages/advisories pill counters.
 - `make patch` (`ansible/patch.yml`) is now manifest-aware: when
-  `results/patch-plan-<env>.json` exists, it installs exactly those
-  package/version pairs (`apt`/`dnf` pinned to the frozen version,
-  idempotent no-op if already at that version) instead of re-resolving
-  "whatever the mirror serves right now"; with no manifest, behaviour is
-  unchanged (plain security-only upgrade) plus a notice pointing at
-  `make patch-plan`. Override the manifest path with `-e plan_file=...`.
-  Every other task in `patch.yml` (allowlist, power-state fix, autoremove,
-  needrestart install + CVE guard + run, needs-restarting) is untouched —
-  only the two "apply security updates" steps became conditional.
+  `results/patch-plan.json` exists, it installs exactly those package/version
+  pairs (`apt`/`dnf` pinned to the frozen version, idempotent no-op if already
+  at that version) instead of re-resolving "whatever the mirror serves right
+  now"; with no manifest, behaviour is unchanged (plain security-only upgrade)
+  plus a notice pointing at `make patch-plan`. Every other task in `patch.yml`
+  (allowlist, power-state fix, autoremove, needrestart install + CVE guard +
+  run, needs-restarting) is untouched — only the two "apply security updates"
+  steps became conditional.
 - `make rollout` no longer just re-runs `patch.yml` against `env=prod`: it's
-  now a hard-`prod`, no-`ENV`-argument sequence that (1) applies the
-  **stage**-frozen manifest to prod
-  (`patch.yml -e env=prod -e plan_file=results/patch-plan-stage.json` —
-  parity: prod installs the exact set already verified on stage, not a
-  fresh, possibly-drifted mirror resolve), (2) `patch-wordpress.yml`,
-  (3) `reboot-cleanup.yml`, (4) `make verify ENV=prod`. Refuses to run with
-  a clear error if `results/patch-plan-stage.json` doesn't exist yet
-  ("run `make patch-plan ENV=stage` and test it on stage first"). Manifest
-  package lists key off the scanned hostname (e.g. `web-stage`); `patch.yml`
-  matches a manifest host by exact `inventory_hostname` first, falling back
-  to any manifest host sharing the current host's `web`/`db` role group so
-  the stage manifest resolves correctly against `web-prod`/`db-prod`.
-  `ansible/rollout.yml` (the old thin `import_playbook: patch.yml` wrapper)
-  is removed — nothing imports it anymore.
+  now a hard-`prod`, no-`ENV`-argument sequence that (1) applies the frozen
+  `results/patch-plan.json` to prod (parity: prod installs the exact set that
+  was frozen and tested, not a fresh, possibly-drifted mirror resolve),
+  (2) `patch-wordpress.yml`, (3) `reboot-cleanup.yml`, (4) `make verify ENV=prod`.
+  Refuses to run with a clear error if `results/patch-plan.json` doesn't exist
+  yet. Manifest package lists key off the scanned hostname (e.g. `web-prod`);
+  `patch.yml` matches a manifest host by exact `inventory_hostname` first,
+  falling back to any manifest host sharing the current host's `web`/`db` role
+  group, so a plan collected on prod still resolves against `web-stage`/`db-stage`
+  when tested on stage. `ansible/rollout.yml` (the old thin
+  `import_playbook: patch.yml` wrapper) is removed — nothing imports it anymore.
 - `make verify` is now a real health-smoke, not HTTP-only: `tests/test_health.py`
   (pytest-testinfra, `ansible` connection backend — hosts/IPs/SSH keys come
   from `ansible/inventory.yml`, `STAND_ENV` picks the stage/prod group)

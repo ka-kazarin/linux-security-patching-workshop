@@ -44,16 +44,17 @@ imported and never touches the network. Link to the images: _to be added_.
 
 1. `make scan-before` — vulnerability scan (Trivy, orchestrated by Ansible
    against the live VMs).
-2. `make patch-plan ENV=stage` — freeze pending SECURITY updates as exact
-   `package=version` pairs into a manifest (installs nothing). Between
-   patching stage today and rolling out to prod tomorrow, a plain
-   `apt/dnf upgrade` can pull in a *different* set (new updates land on the
-   mirror in between) — the manifest is what makes "prod gets exactly what
-   was tested on stage" true rather than aspirational.
-3. `make patch ENV=stage` — patch OS/middleware via Ansible. Installs the
-   frozen manifest's exact versions when one exists for this env, otherwise
-   falls back to "whatever the security pocket currently serves" (and says
-   so).
+2. `make patch-plan ENV=prod` — freeze pending SECURITY updates as exact
+   `package=version` pairs into a single `results/patch-plan.json` (installs
+   nothing). Collect it against **prod's** real pending set — prod is the
+   target — then test that same plan on stage. Between freezing the plan and
+   rolling it out, a plain `apt/dnf upgrade` can pull in a *different* set (new
+   updates land on the mirror in between) — the manifest is what makes "prod
+   gets exactly what was tested" true rather than aspirational.
+3. `make patch ENV=stage` — patch OS/middleware on **stage** via Ansible, to
+   test the plan. Installs the frozen manifest's exact versions when it exists,
+   otherwise falls back to "whatever the security pocket currently serves" (and
+   says so).
 4. `make verify` — pytest smoke: services still alive after the patch (it
    didn't break anything). Proof the CVE is *closed* comes from
    `make scan-after` and `make attack`, not from here.
