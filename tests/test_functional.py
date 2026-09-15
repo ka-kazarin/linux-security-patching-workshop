@@ -13,10 +13,12 @@ requests = pytest.importorskip("requests", reason="pip install -r requirements-d
 
 
 def test_wordpress_home_returns_200(stand_url):
+    """Home page returns 200 over the network."""
     resp = requests.get(stand_url, timeout=5)
     assert resp.status_code == 200
 
 
 def test_wordpress_serves_html(stand_url):
+    """Home page is served as HTML."""
     resp = requests.get(stand_url, timeout=5)
     assert "text/html" in resp.headers.get("content-type", "")

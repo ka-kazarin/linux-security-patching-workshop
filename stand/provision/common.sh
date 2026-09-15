@@ -99,3 +99,41 @@ if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewa
 		echo "common: firewalld — opened 9100 for 192.168.56.0/24"
 	fi
 fi
+
+# --- Pre-install demo tools at provisioning time (not on the webinar clock) --
+# scan.yml/bench.yml still install these idempotently as a safety net, but
+# doing it here means `make up` (run well ahead of the demo) pays the cost,
+# and the live `make scan-*` / `make bench-*` start instantly. Scoped by host
+# role: mon neither scans nor is load-tested, so it gets none of it.
+install_trivy() {
+	if [ ! -x /usr/local/bin/trivy ]; then
+		# Same official prebuilt-binary install scan.yml uses (idempotent).
+		curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+			| sh -s -- -b /usr/local/bin
+	fi
+	# Warm the vulnerability DB (root's cache, same user the scan runs as) so
+	# the first live scan doesn't spend time downloading it.
+	/usr/local/bin/trivy image --download-db-only >/dev/null 2>&1 || true
+}
+
+case "$(hostname)" in
+	web-*)
+		install_trivy
+		if ! command -v wrk >/dev/null 2>&1; then   # web load baseline (bench.yml)
+			export DEBIAN_FRONTEND=noninteractive
+			apt-get install -y wrk || true
+		fi
+		echo "common: pre-installed trivy + wrk (web)"
+		;;
+	db-*)
+		install_trivy
+		if ! command -v sysbench >/dev/null 2>&1; then   # MySQL load baseline (bench.yml)
+			dnf install -y epel-release || true
+			dnf install -y sysbench || true
+		fi
+		echo "common: pre-installed trivy + sysbench (db)"
+		;;
+	*)
+		echo "common: $(hostname) — no scan/bench tools needed"
+		;;
+esac

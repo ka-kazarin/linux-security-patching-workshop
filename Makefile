@@ -23,13 +23,14 @@ SEVERITY ?= CRITICAL,HIGH
 CMD ?= id
 # Load-baseline methodology (make bench-before/bench-after): 1 warmup run
 # (discarded) + BENCH_RUNS timed runs of BENCH_DURATION seconds each, sampled
-# every BENCH_INTERVAL seconds. The web host runs nginx then php sequentially,
-# so a full run is ~2*(warmup + RUNS*duration); at 30 + 2*90s that's ~7 min
-# (db runs mysql in parallel, well under that). 90s * 2 still yields ~18
-# samples/metric for a stable median/p90. Override for a quick mechanics
-# check, e.g. BENCH_DURATION=20 BENCH_WARMUP=10.
-BENCH_WARMUP   ?= 30
-BENCH_DURATION ?= 90
+# every BENCH_INTERVAL seconds. The web host runs nginx then php sequentially
+# and each timed run is a sequence of short wrk windows (per-window startup
+# adds up), so wall time is more than the raw seconds suggest. 20 + 2*60s
+# lands the whole thing under ~8 min (measured); still 12 samples/metric for
+# a usable median/p90. Override for a quick mechanics check, e.g.
+# BENCH_DURATION=20 BENCH_WARMUP=10.
+BENCH_WARMUP   ?= 20
+BENCH_DURATION ?= 60
 BENCH_RUNS     ?= 2
 BENCH_INTERVAL ?= 10
 
@@ -190,9 +191,9 @@ patch-wordpress: ## patch the app-layer CVE (WordPress core, ENV=stage|prod) -- 
 verify: ## health-smoke the stand: SSH + service checks (web+db) after a patch -> HTML report (ENV=stage|prod)
 	$(call check_env)
 ifneq ("$(wildcard $(VENV_PYTHON))","")
-	$(call run,. $(VENV_DIR)/bin/activate && STAND_URL=$(WEB_URL) STAND_ENV=$(ENV) python3 -m pytest -m stand --html=results/verify.html --self-contained-html && deactivate)
+	$(call run,. $(VENV_DIR)/bin/activate && STAND_URL=$(WEB_URL) STAND_ENV=$(ENV) python3 -m pytest -m stand --tb=no && deactivate)
 else
-	$(call run,STAND_URL=$(WEB_URL) STAND_ENV=$(ENV) python3 -m pytest -m stand --html=results/verify.html --self-contained-html)
+	$(call run,STAND_URL=$(WEB_URL) STAND_ENV=$(ENV) python3 -m pytest -m stand --tb=no)
 endif
 
 # Hard env=prod throughout, deliberately not ENV-driven like the targets

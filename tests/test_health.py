@@ -81,9 +81,10 @@ def _stand_must_be_up(reachability: dict[str, tuple[bool, object]]) -> None:
 
 @pytest.mark.parametrize("host", ENV_HOSTS)
 def test_ssh_reachable(host: str, reachability: dict[str, tuple[bool, object]]) -> None:
-    """Every host of the ENV group must accept SSH -- a VM that's down
-    (halted, never rebooted after patch-reboot, ...) fails here, loudly,
-    never skips, while a live sibling host's checks still run."""
+    """Host is reachable over SSH.
+
+    A down VM (halted, or never rebooted after patch-reboot) fails here
+    loudly, never skips, while a live sibling host's checks still run."""
     ok, info = reachability[host]
     assert ok, f"{host} unreachable over SSH ({info})"
 
@@ -130,19 +131,25 @@ class TestWebHost:
     """web group (Ubuntu): nginx + php-fpm serving WordPress."""
 
     def test_nginx_running(self, web_host) -> None:
+        """nginx service is running."""
         assert web_host.service("nginx").is_running, "nginx is not running"
 
     def test_port_80_listening(self, web_host) -> None:
+        """nginx is listening on :80."""
         assert web_host.socket("tcp://0.0.0.0:80").is_listening, "nothing listening on :80"
 
     def test_home_page_returns_200(self, web_host) -> None:
-        cmd = web_host.run("curl -sf -o /dev/null -w '%{http_code}' http://localhost/")
+        """WordPress home serves 200 (following the canonical redirect)."""
+        # WordPress canonical-redirects a Host it doesn't recognise (localhost)
+        # to its configured site URL (the host-only IP), so a bare localhost/
+        # answers 302 -- that's WP alive, not a fault. Follow redirects (-L)
+        # and assert the final 200.
+        cmd = web_host.run("curl -sSL -o /dev/null -w '%{http_code}' http://localhost/")
         code = cmd.stdout.strip()
-        assert cmd.rc == 0 and code == "200", (
-            f"GET localhost/ failed: rc={cmd.rc} code={code!r} stderr={cmd.stderr!r}"
-        )
+        assert code == "200", f"GET localhost/ (following redirects) returned {code!r}"
 
     def test_wp_admin_not_server_error(self, web_host) -> None:
+        """wp-admin responds without a 5xx (PHP is not crashing)."""
         # Not a 200: /wp-admin/ redirects to the login form when logged out.
         # The point is a deliberate HTTP response, not a 5xx PHP crash.
         cmd = web_host.run("curl -s -o /dev/null -w '%{http_code}' http://localhost/wp-admin/")
@@ -150,6 +157,7 @@ class TestWebHost:
         assert code and not code.startswith("5"), f"/wp-admin/ returned {code!r} (PHP crash?)"
 
     def test_php_fpm_running(self, web_host) -> None:
+        """php-fpm service is running."""
         service = _php_fpm_service(web_host)
         assert web_host.service(service).is_running, f"{service} is not running"
 
@@ -159,15 +167,18 @@ class TestDbHost:
     """db group (Oracle Linux): MySQL backing WordPress."""
 
     def test_mysqld_running(self, db_host) -> None:
+        """mysqld service is running."""
         assert db_host.service("mysqld").is_running, "mysqld is not running"
 
     def test_port_3306_listening(self, db_host) -> None:
+        """MySQL is listening on :3306."""
         # mysqld binds the host-only IP explicitly (db.sh), not 0.0.0.0 --
         # ask for that exact address, taken from the live ssh connection.
         ip = db_host.backend.hostname
         assert db_host.socket(f"tcp://{ip}:3306").is_listening, f"nothing listening on {ip}:3306"
 
     def test_select_1(self, db_host) -> None:
+        """MySQL answers the protocol (SELECT 1)."""
         # Local socket, root@localhost, no password -- same access path
         # db.sh's own provisioning uses. Proves MySQL answers the protocol,
         # not just that the process/port exist.

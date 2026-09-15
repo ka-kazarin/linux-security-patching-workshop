@@ -2,6 +2,5 @@
 # standard-library only. Install for running the test suite and verify step:
 #   python3 -m pip install -r requirements-dev.txt
 pytest>=8.0
-pytest-html>=4.1
 pytest-testinfra>=10.0
 requests>=2.32

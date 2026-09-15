@@ -9,6 +9,24 @@ what a student/user of the stand sees and uses.
 
 ## [Unreleased]
 
+### Changed
+- Provisioning pre-installs the scan/bench tools (Trivy + its vulnerability DB
+  on web/db, `wrk` on web, `sysbench` via EPEL on db — `stand/provision/common.sh`,
+  scoped by host role) so the cost lands in `make up` (run ahead of the demo),
+  not on the webinar clock. `scan.yml`/`bench.yml` keep their idempotent
+  installs as a safety net. Live `make scan-before` dropped from ~1:28 to ~31s.
+- Load-baseline durations trimmed again (warmup 20 + 2×60s per metric): a full
+  `make bench-before` measured ~7.5 min, down from ~21 min (still 12
+  samples/metric for a usable median/p90). Override longer with `BENCH_*`.
+
+- `make verify` output is now readable at a glance: a per-test line
+  `<name> — <description> ..... OK/FAIL/SKIP  [cause]` (description from the
+  test docstring, cause from the assertion message) instead of pytest's dots
+  and long tracebacks, and `results/verify.html` is rendered in the shared
+  stand report style (`scan/report_style.py`) rather than pytest-html — one
+  visual identity across scan/delta/bench/verify, self-contained. Dropped the
+  `pytest-html` dependency.
+
 ## [1.0.0] - 2026-09-15
 
 ### Added
