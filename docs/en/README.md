@@ -1,4 +1,4 @@
-# Vulnerability Management Stand (Slurm)
+# Vulnerability Management Stand
 
 A hands-on stand for a vulnerability management / security patching webinar.
 Full lifecycle — scanning, prioritization, patching, verification, rollout —

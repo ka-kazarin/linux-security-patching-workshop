@@ -1,4 +1,4 @@
-# Vulnerability Management — учебный стенд (Slurm)
+# Vulnerability Management — учебный стенд
 
 Стенд к вебинару-интенсиву по управлению уязвимостями (vulnerability management /
 security patching). Полный жизненный цикл — сканирование, приоритизация, патчинг,

@@ -18,7 +18,7 @@ NC     := \033[0m
 # toggling its WAF).
 ENV ?= stage
 # Vuln severities Trivy scans for (make scan-before/after).
-SEVERITY ?= CRITICAL,HIGH
+SEVERITY ?= CRITICAL,HIGH,MEDIUM,LOW
 # Command to run through the wp2shell-poc shell (make attack-shell).
 CMD ?= id
 # Load-baseline methodology (make bench-before/bench-after): 1 warmup run
@@ -73,11 +73,10 @@ endef
 
 banner:
 	@printf "$(BOLD)"
-	@echo '   ____  _     _   _ ____  __  __'
-	@echo '  / ___|| |   | | | |  _ \|  \/  |   Vulnerability Management'
-	@echo '  \___ \| |   | | | | |_) | |\/| |   training stand · Slurm'
-	@echo '   ___) | |___| |_| |  _ <| |  | |'
-	@echo '  |____/|_____|\___/|_| \_\_|  |_|'
+	@echo '  ╔═══════════════════╗'
+	@echo '  ║  VULN MGMT STAND  ║'
+	@echo '  ╚═══════════════════╝'
+	@echo '  Vulnerability Management · training stand'
 	@printf "$(NC)\n"
 
 help: banner ## show this help
@@ -141,7 +140,7 @@ scan-delta: ## compute the scan delta for ENV -> CSV (Registry) + HTML chart (EN
 	$(call run,python3 scan/delta.py --before results/scan-before-$(ENV).json --after results/scan-after-$(ENV).json --csv results/delta-$(ENV).csv --html results/delta-$(ENV).html)
 
 clean-results: ## remove generated demo artifacts under results (keeps README.md)
-	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench-*.json results/bench-*.html results/patch-plan*.json results/patch-plan*.html)
+	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench*.json results/bench*.html results/patch-plan*.json results/patch-plan*.html)
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
 # Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
