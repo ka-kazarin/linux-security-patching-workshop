@@ -9,6 +9,23 @@ what a student/user of the stand sees and uses.
 
 ## [Unreleased]
 
+### Added
+- `results/change-log.jsonl` — an append-only, CMDB-style change log: every
+  successful `make patch`/`rollout`/`patch-wordpress`/`patch-reboot` run
+  appends one JSON-Lines record (what was patched, on which hosts, in which
+  env, by whom, exact package/version pairs when the action is plan-driven)
+  via the new `scan/change_log_append.py` helper, wired into the Makefile
+  right after each target's real work succeeds. `make change-log`
+  (`scan/change_log_report.py`) renders it in the shared report style as a
+  browsable month-by-month calendar — one collapsible entry per event
+  (action/env/hosts/who collapsed, package list expanded on click),
+  color-coded by action, with a client-side search box (host/package/action/
+  who), no external JS. Seeded from a tracked
+  `scan/examples/change-log-seed.jsonl` (~3 weeks of realistic history) so
+  the calendar isn't empty on a fresh clone; unlike the rest of `results/`,
+  the `.jsonl` file survives `make clean-results` — it's real history, not a
+  regenerable report.
+
 ### Changed
 - `make bench-delta` verdict is now hybrid: an absolute p95 **SLA** per metric
   (a generous, host-agnostic ceiling) is the primary gate, so a sub-millisecond

@@ -100,7 +100,7 @@ endef
 
 .PHONY: help banner up up-lite halt destroy urls creds scan-before scan-after attack attack-shell \
         patch-plan patch patch-reboot patch-wordpress verify scan-delta bench-before bench-after bench-delta rollout \
-        waf-on waf-off doctor init clean-results
+        waf-on waf-off doctor init clean-results change-log
 
 banner:
 	@printf "$(BOLD)"
@@ -171,8 +171,11 @@ scan-delta: ## compute the scan delta for ENV -> CSV (Registry) + HTML chart (EN
 	$(call check_scan_env)
 	$(call run,python3 scan/delta.py --before results/scan-before-$(ENV).json --after results/scan-after-$(ENV).json --csv results/delta-$(ENV).csv --html results/delta-$(ENV).html)
 
-clean-results: ## remove generated demo artifacts under results (keeps README.md)
-	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench*.json results/bench*.html results/patch-plan*.json results/patch-plan*.html)
+change-log: ## render results/change-log.html -- CMDB-style calendar of past patch/rollout/patch-wordpress/patch-reboot runs, with search
+	$(call run,python3 scan/change_log_report.py)
+
+clean-results: ## remove generated demo artifacts under results (keeps README.md and change-log.jsonl -- that's history, not a report)
+	$(call run,rm -f results/scan-*.json results/scan-*.html results/delta*.csv results/delta*.html results/verify.html results/attack.log results/bench*.json results/bench*.html results/patch-plan*.json results/patch-plan*.html results/change-log.html)
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
 # Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
@@ -211,14 +214,17 @@ patch-plan: ## freeze pending SECURITY updates -> results/patch-plan.json + HTML
 patch: ## apply OS/middleware patches -- exact versions from results/patch-plan.json if it exists, else the current security pocket (ENV=stage|prod)
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=$(ENV))
+	$(call run,python3 scan/change_log_append.py --action patch --env $(ENV))
 
 patch-reboot: ## reboot after patch + purge the non-running kernel (clears kernel-CVE false positives from a scan)
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/reboot-cleanup.yml -e env=$(ENV))
+	$(call run,python3 scan/change_log_append.py --action patch-reboot --env $(ENV))
 
 patch-wordpress: ## patch the app-layer CVE (WordPress core, ENV=stage|prod) -- OS patch never touches this
 	$(call check_env)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-wordpress.yml -e env=$(ENV))
+	$(call run,python3 scan/change_log_append.py --action patch-wordpress --env $(ENV))
 
 # verify = smoke only: "the patch did not break the service". Green before
 # AND after a patch -- that's the point (a patch you can promote is one that
@@ -254,6 +260,7 @@ rollout: ## roll out the frozen patch-plan to prod: patch -> patch-wordpress -> 
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-wordpress.yml -e env=prod)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/reboot-cleanup.yml -e env=prod)
 	$(MAKE) verify ENV=prod
+	$(call run,python3 scan/change_log_append.py --action rollout --env prod)
 
 # --- Exploit and virtual patch (isolated network only!) -------------------------
 

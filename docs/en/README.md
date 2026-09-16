@@ -73,6 +73,11 @@ Live exploit and virtual patching: `make attack` → `make waf-on` →
 `make attack` (403) → `make patch-wordpress` (the real fix) → `make waf-off`
 → `make attack` (still dead — patched now, not just shielded).
 
+Every `patch`/`rollout`/`patch-wordpress`/`patch-reboot` run above appends a
+record to `results/change-log.jsonl` — what was patched, where, when, and by
+whom, a CMDB/change-management stand-in. `make change-log` renders it as a
+searchable HTML calendar (`results/change-log.html`).
+
 ## Findings registry (Google Sheets)
 
 The live vulnerability registry lives in a Google Sheets template (outside
