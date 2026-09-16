@@ -65,6 +65,15 @@ define resume_bench_neighbors
 	done
 endef
 
+# rollout snapshots these prod hosts before it changes anything, so `make
+# rollback` can revert them to that known-good point. Online snapshot save is
+# quick and needs no downtime. Restore is the awkward part on this box:
+# VirtualBox can't reload a running snapshot's saved device state ("Failed to
+# load unit 'vga'"), so rollback restores the disk, discards the broken saved
+# state, and boots the VM fresh (disk reverts, in-RAM state is lost — exactly
+# what you want for a rollback) — verified live on the Oracle db host.
+ROLLOUT_HOSTS := web-prod db-prod
+
 STAND_DIR   := stand
 INVENTORY   := ansible/inventory.yml
 VENV_DIR    := .venv
@@ -100,7 +109,7 @@ endef
 
 .PHONY: help banner up up-lite halt destroy urls creds scan-before scan-after attack attack-shell \
         patch-plan patch patch-reboot patch-wordpress verify scan-delta bench-before bench-after bench-delta rollout \
-        waf-on waf-off doctor init clean-results change-log
+        waf-on waf-off doctor init clean-results change-log snapshot rollback
 
 banner:
 	@printf "$(BOLD)"
@@ -256,11 +265,29 @@ endif
 # results/patch-plan.json, so no -e override is needed here.
 rollout: ## roll out the frozen patch-plan to prod: patch -> patch-wordpress -> patch-reboot -> verify (hard env=prod, needs a patch-plan tested on stage first)
 	@test -f results/patch-plan.json || { printf "$(RED)✗ no frozen patch-plan (results/patch-plan.json) -- run 'make patch-plan ENV=prod', test it via 'make patch ENV=stage' + 'make verify ENV=stage', then retry$(NC)\n" >&2; exit 1; }
+	$(MAKE) snapshot
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=prod)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-wordpress.yml -e env=prod)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/reboot-cleanup.yml -e env=prod)
 	$(MAKE) verify ENV=prod
 	$(call run,python3 scan/change_log_append.py --action rollout --env prod)
+
+# --- Rollback (change-management counter-action to rollout) ---------------------
+# A patch is a change, and scans/verify don't catch everything -- so register
+# the change (change-log) AND be able to undo it. Whole-VM snapshot rollback is
+# the pragmatic revert for a system-wide change (package-level `dnf history
+# undo` / pinned `apt` downgrade are the finer-grained alternatives shown on
+# the slides). Note: `make patch-reboot` purges the old kernel, removing the
+# grub rollback path -- the snapshot is what still gets you back.
+snapshot: ## snapshot the prod hosts as a pre-rollout rollback point (online, no downtime) -- rollout runs this for you
+	$(call run,cd $(STAND_DIR) && for vm in $(ROLLOUT_HOSTS); do vagrant snapshot delete "$$vm" pre-rollout >/dev/null 2>&1 || true; vagrant snapshot save "$$vm" pre-rollout; done)
+
+rollback: ## revert the prod hosts to the pre-rollout snapshot (undo the last make rollout)
+	@cd $(STAND_DIR) && for vm in $(ROLLOUT_HOSTS); do \
+		vagrant snapshot list "$$vm" 2>/dev/null | grep -qw pre-rollout || { printf "$(RED)✗ no 'pre-rollout' snapshot for $$vm -- nothing to roll back (make rollout takes one first)$(NC)\n" >&2; exit 1; }; \
+	done
+	$(call run,cd $(STAND_DIR) && for vm in $(ROLLOUT_HOSTS); do vagrant snapshot restore "$$vm" pre-rollout >/dev/null 2>&1 || true; vbid=$$(VBoxManage list vms 2>/dev/null | grep "\"stand_$${vm}_" | grep -o '{[a-f0-9-]*}' | tr -d '{}'); [ -n "$$vbid" ] && VBoxManage discardstate "$$vbid" >/dev/null 2>&1 || true; vagrant up "$$vm" >/dev/null 2>&1 || true; done)
+	$(call run,python3 scan/change_log_append.py --action rollback --env prod)
 
 # --- Exploit and virtual patch (isolated network only!) -------------------------
 

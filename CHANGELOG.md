@@ -10,6 +10,17 @@ what a student/user of the stand sees and uses.
 ## [Unreleased]
 
 ### Added
+- `make rollback` — the change-management counter-action to `make rollout`.
+  `rollout` now takes an online VM snapshot of the prod hosts (`make snapshot`,
+  `pre-rollout`) before it changes anything; `make rollback` reverts them to it.
+  VirtualBox can't reload a running snapshot's saved device state on this box
+  ("Failed to load unit 'vga'"), so rollback restores the disk, discards the
+  broken saved state and boots the VM fresh — verified live on both the Oracle
+  db and Ubuntu web prod hosts (a marker written after the snapshot is gone
+  after rollback; services healthy). A rollback is itself logged to the change
+  log. (Package-level rollback — `dnf history undo` / pinned `apt` downgrade —
+  is covered on the slides; note `patch-reboot` purges the old kernel, removing
+  the grub rollback path, which the snapshot backstops.)
 - `results/change-log.jsonl` — an append-only, CMDB-style change log: every
   successful `make patch`/`rollout`/`patch-wordpress`/`patch-reboot` run
   appends one JSON-Lines record (what was patched, on which hosts, in which

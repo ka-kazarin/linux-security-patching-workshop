@@ -32,6 +32,7 @@ ACTION_LABELS = {
     "rollout": "rollout",
     "patch-wordpress": "wordpress",
     "patch-reboot": "reboot",
+    "rollback": "rollback",
 }
 
 EXTRA_CSS = """
@@ -62,6 +63,7 @@ text-transform:uppercase;letter-spacing:.02em}
 .evt-rollout .evt-badge{background:var(--bad)}
 .evt-patch-wordpress .evt-badge{background:var(--HIGH)}
 .evt-patch-reboot .evt-badge{background:var(--ok)}
+.evt-rollback .evt-badge{background:#7c3aed}
 .evt-env{font-weight:600;color:var(--navy)}
 .evt-hosts{color:var(--muted)}
 .evt-who{color:var(--muted);font-style:italic}

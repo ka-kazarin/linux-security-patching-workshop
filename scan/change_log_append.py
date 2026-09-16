@@ -49,13 +49,14 @@ PLAN_PATH_DEFAULT = REPO_ROOT / "results" / "patch-plan.json"
 # vs stand/nodes.json IPs (a static file, not worth a generator for one value).
 WORDPRESS_FIXED_VERSION = "7.0.2"
 
-ACTIONS = ("patch", "rollout", "patch-wordpress", "patch-reboot")
+ACTIONS = ("patch", "rollout", "patch-wordpress", "patch-reboot", "rollback")
 
 DEFAULT_NOTES = {
     "patch": "OS/middleware security patch (apt/dnf, frozen plan if present)",
     "rollout": "frozen patch-plan rolled out to prod: patch + WordPress core + reboot cleanup + verify",
     "patch-wordpress": "app-layer CVE fix: WordPress core updated via wp-cli",
     "patch-reboot": "reboot into the new kernel + purge of the old kernel's packages",
+    "rollback": "reverted prod to the pre-rollout VM snapshot (change undone)",
 }
 
 
