@@ -3,21 +3,27 @@
 
 Reads a "before" and an "after" bench run (vegeta against nginx/PHP on the
 web host, sysbench oltp_read_only against MySQL on the db host — one entry
-per host/metric, schema documented in ansible/bench.yml: a warmup run
-discarded, then 2 timed runs at a FIXED sub-saturation rate, sampled at a
-fixed interval into a p50/p95-latency + success-rate time series). Prints a
-before/after/delta table per host/metric using the **median p95 latency**
-(plus success rate) across every sample from both timed runs, and flags
-anything that regressed past tolerance.
+per host/metric, schema in ansible/bench.yml: a warmup run discarded, then 2
+timed runs at a FIXED sub-saturation rate, sampled at a fixed interval into a
+p50/p95-latency + success-rate time series). Reports the **median p95
+latency** (plus success rate) per metric.
 
-Fixed-rate-below-the-ceiling is the point: a rate held under the endpoint's
-capacity keeps the server from ever queueing, so p95 latency barely moves
-between two otherwise-identical runs -- unlike peak-throughput numbers on a
-shared demo VM, which chase whatever CPU the noisy-neighbour scheduler
-allows *this second* and can legitimately swing ±30-56% run to run. The
-default tolerance below is still generous (this remains a smoke-level
-baseline on a single VM, not a performance lab) but far tighter than a
-throughput-driven one needed to be.
+Verdict is a hybrid, because "did it change vs the last run?" is the wrong
+question for some metrics:
+
+  * Every metric has an absolute p95 **SLA** (a generous ceiling a healthy
+    stack clears easily). Breaching it = a real, gross regression. This is
+    the primary, host-noise-proof gate — for a sub-millisecond endpoint like
+    static nginx, where a 0.2 ms wobble is 20% but means nothing, it's the
+    ONLY gate.
+  * For metrics whose latency is large enough that a percentage is meaningful
+    (php, mysql — tens of ms), a relative before/after check ALSO runs, to
+    catch a real slowdown that's still under the SLA (e.g. 80 ms -> 160 ms).
+  * A drop in success rate flags on its own, for any metric.
+
+SLAs are absolute and therefore host-dependent, so they're deliberately
+generous (this is a single-VM smoke baseline, not a performance lab) — a
+breach means something genuinely broke, not that the laptop was busy.
 
 Runs on the standard library only. Invoked from the Makefile ``bench-delta``
 target.
@@ -33,11 +39,18 @@ from pathlib import Path
 from report_style import page
 
 DEFAULT_TOLERANCE_PCT = 25.0
-# A drop in success rate, in percentage points, that counts as a regression
-# on its own -- independent of the latency tolerance above. At a fixed rate
-# safely under the ceiling, success should sit at ~100% before AND after;
-# any real drop means the patch made the service start shedding requests.
 DEFAULT_SUCCESS_DROP_PP = 1.0
+
+# Absolute p95 SLA per metric, in ms: a generous ceiling a healthy stack
+# clears with room to spare. Primary, noise-proof gate (see module docstring).
+SLA_P95_MS = {
+    "nginx-static": 5.0,     # observed ~1 ms; sub-ms, % is pure noise -> SLA only
+    "php": 250.0,            # observed ~80 ms (WordPress render through PHP+MySQL)
+    "mysql": 20.0,           # observed ~7 ms (sysbench oltp_read_only)
+}
+# Metrics whose absolute latency is large enough for a before/after percentage
+# to be meaningful — these ALSO get the relative check. Sub-ms metrics do not.
+RELATIVE_METRICS = {"php", "mysql"}
 
 
 class BenchError(Exception):
@@ -82,13 +95,9 @@ def pct_delta(before: float, after: float) -> float:
 def build_rows(before: dict[tuple[str, str], dict],
                 after: dict[tuple[str, str], dict],
                 tolerance: float, success_drop_pp: float) -> list[dict]:
-    """One row per host/metric present in both runs, median-p95-driven.
-
-    A row regresses if median p95 rose past ``tolerance`` percent OR the
-    median success rate dropped more than ``success_drop_pp`` percentage
-    points -- either one is a real user-visible regression at a rate that
-    was never supposed to saturate the service.
-    """
+    """One row per host/metric present in both runs. Verdict is hybrid:
+    SLA breach (any metric) OR relative p95 rise past tolerance (metrics in
+    RELATIVE_METRICS only) OR success-rate drop. See the module docstring."""
     rows = []
     missing = (before.keys() ^ after.keys())
     if missing:
@@ -106,11 +115,22 @@ def build_rows(before: dict[tuple[str, str], dict],
 
         p95_b, p95_a = b["median_p95"], a["median_p95"]
         delta = pct_delta(p95_b, p95_a)
-        latency_regressed = delta > tolerance
-
         success_b = b["median_success"] * 100
         success_a = a["median_success"] * 100
+
+        sla = SLA_P95_MS.get(metric)
+        relative_eligible = metric in RELATIVE_METRICS
+        sla_breach = sla is not None and p95_a > sla
+        relative_regressed = relative_eligible and delta > tolerance
         success_regressed = (success_b - success_a) > success_drop_pp
+
+        reasons = []
+        if sla_breach:
+            reasons.append(f"p95 {p95_a:.1f}ms over SLA {sla:.0f}ms")
+        if relative_regressed:
+            reasons.append(f"p95 +{delta:.0f}% vs before")
+        if success_regressed:
+            reasons.append(f"success {success_a:.1f}% (was {success_b:.1f}%)")
 
         rows.append({
             "label": f"{host}/{metric}", "host": host, "metric": metric,
@@ -118,7 +138,10 @@ def build_rows(before: dict[tuple[str, str], dict],
             "p50_before": b.get("median_p50"), "p50_after": a.get("median_p50"),
             "p95_before": p95_b, "p95_after": p95_a, "delta": delta,
             "success_before": success_b, "success_after": success_a,
-            "verdict": "REGRESSION" if (latency_regressed or success_regressed) else "OK",
+            "sla": sla, "relative_eligible": relative_eligible,
+            "sla_breach": sla_breach,
+            "verdict": "FAIL" if reasons else "OK",
+            "reason": "; ".join(reasons),
             "samples_before": b["samples"], "samples_after": a["samples"],
         })
     return rows
@@ -134,15 +157,25 @@ def _fmt_ms(value: float | None) -> str:
     return f"{value:.2f}" if value is not None else "-"
 
 
+def _fmt_sla(row: dict) -> str:
+    return f"< {row['sla']:.0f}" if row["sla"] is not None else "-"
+
+
+def _fmt_delta(row: dict) -> str:
+    """Delta text; sub-ms metrics that don't get a relative check are marked
+    'info' so a big-looking % there is clearly not driving the verdict."""
+    d = f"{row['delta']:+.1f}%"
+    return d if row["relative_eligible"] else f"{d} (info)"
+
+
 def print_table(rows: list[dict]) -> None:
-    """Print an aligned metric | rate | p50/p95 before/after | delta% | success | verdict table."""
-    header = ("metric", "rate", "p50 before", "p50 after", "p95 before", "p95 after",
-               "delta % (p95)", "success before", "success after", "verdict")
+    """Aligned metric | rate | p95 before/after | SLA | Δ | success | verdict table."""
+    header = ("metric", "rate", "p95 before", "p95 after", "SLA p95",
+               "Δ p95", "success", "verdict")
     formatted = [
-        (r["label"], _fmt_rate(r), _fmt_ms(r["p50_before"]), _fmt_ms(r["p50_after"]),
-         f"{r['p95_before']:.2f}", f"{r['p95_after']:.2f}", f"{r['delta']:+.1f}%",
-         f"{r['success_before']:.1f}%", f"{r['success_after']:.1f}%",
-         "OK" if r["verdict"] == "OK" else "⚠ REGRESSION")
+        (r["label"], _fmt_rate(r), f"{r['p95_before']:.2f}", f"{r['p95_after']:.2f}",
+         _fmt_sla(r), _fmt_delta(r), f"{r['success_after']:.1f}%",
+         "OK" if r["verdict"] == "OK" else f"⚠ FAIL — {r['reason']}")
         for r in rows
     ]
     widths = [max(len(header[i]), *(len(row[i]) for row in formatted)) for i in range(len(header))]
@@ -159,12 +192,10 @@ def print_table(rows: list[dict]) -> None:
 def _svg_sparkline(samples_before: list[dict], samples_after: list[dict],
                    width: int = 420, height: int = 70, pad: int = 6) -> str:
     """Inline SVG line chart of p95 latency over samples, before vs after
-    overlaid (solid navy = before, dashed cyan = after) -- same "no external
-    assets" inline-SVG style as scan/delta.py's _svg_bars. X is sample
-    *index*, not wall-clock time: before/after runs are independent
-    processes and this keeps both lines plotted even if one run collected a
-    slightly different sample count than the other.
-    """
+    overlaid (solid navy = before, dashed cyan = after) — same "no external
+    assets" inline-SVG style as scan/delta.py. X is sample *index*, not
+    wall-clock: before/after are independent runs, this overlays both even
+    with slightly different sample counts."""
     values = [s["p95_ms"] for s in samples_before] + [s["p95_ms"] for s in samples_after]
     lo, hi = min(values), max(values)
     span = (hi - lo) or 1.0
@@ -191,64 +222,65 @@ def _svg_sparkline(samples_before: list[dict], samples_after: list[dict],
 
 
 def write_html_report(rows: list[dict], tolerance: float, success_drop_pp: float, path: Path) -> None:
-    """Render a self-contained HTML load-baseline report in the shared style
-    (scan/report_style.py) — a before/after/delta table with an OK/regression
-    verdict per metric, plus a p95-latency sparkline (before vs after
-    overlaid) per metric. Same visual identity as the scan delta report."""
-    regressions = sum(1 for r in rows if r["verdict"] == "REGRESSION")
-    reg_class = "bad" if regressions else "good"
+    """Self-contained HTML report in the shared style (scan/report_style.py):
+    per metric — p95 before/after (after coloured by its SLA), the SLA, the
+    before/after delta (muted 'info' for sub-ms metrics that the delta
+    doesn't gate), success, an OK/FAIL verdict with the reason, and a
+    p95-latency sparkline."""
+    failures = sum(1 for r in rows if r["verdict"] == "FAIL")
+    reg_class = "bad" if failures else "good"
     trows = []
     for r in rows:
         ok = r["verdict"] == "OK"
-        trend = f"<td class='trend'>{_svg_sparkline(r['samples_before'], r['samples_after'])}</td>"
+        p95a_cls = "delta-bad" if r["sla_breach"] else "delta-good"
+        delta_cls = ("delta-bad" if (r["relative_eligible"] and not ok and "vs before" in r["reason"])
+                     else "" if r["relative_eligible"] else "num-info")
+        verdict_cell = (f"<span class='badge ok'>OK</span>" if ok
+                        else f"<span class='badge bad'>⚠ FAIL</span>"
+                             f"<div class='why'>{r['reason']}</div>")
         trows.append(
             f"<tr><td>{r['label']}<br><span class='rate'>{_fmt_rate(r)}, {r['tool']}</span></td>"
-            f"<td class='num'>{_fmt_ms(r['p50_before'])}</td>"
-            f"<td class='num'>{_fmt_ms(r['p50_after'])}</td>"
             f"<td class='num'>{r['p95_before']:.2f}</td>"
-            f"<td class='num'>{r['p95_after']:.2f}</td>"
-            f"<td class='num {'delta-good' if ok else 'delta-bad'}'>{r['delta']:+.1f}%</td>"
-            f"<td class='num'>{r['success_before']:.1f}%</td>"
+            f"<td class='num {p95a_cls}'>{r['p95_after']:.2f}</td>"
+            f"<td class='num'>{_fmt_sla(r)}</td>"
+            f"<td class='num {delta_cls}'>{_fmt_delta(r)}</td>"
             f"<td class='num'>{r['success_after']:.1f}%</td>"
-            f"<td><span class='badge {'ok' if ok else 'bad'}'>"
-            f"{'OK' if ok else '⚠ REGRESSION'}</span></td>"
-            + trend + "</tr>")
-    extra_css = (".trend{min-width:140px}"
-                 ".trend svg{display:block}"
-                 ".rate{color:var(--muted);font-size:.78rem;font-weight:400}")
+            f"<td>{verdict_cell}</td>"
+            f"<td class='trend'>{_svg_sparkline(r['samples_before'], r['samples_after'])}</td></tr>")
+    extra_css = (".trend{min-width:140px}.trend svg{display:block}"
+                 ".rate{color:var(--muted);font-size:.78rem;font-weight:400}"
+                 ".num-info{color:var(--muted)}"
+                 ".why{color:var(--bad);font-size:.72rem;margin-top:.2rem}"
+                 ".trend-sw{display:inline-block;width:16px;height:2px;vertical-align:middle;"
+                 "margin:0 .3rem 0 .8rem;background:#16324f}"
+                 ".trend-sw.after{background:repeating-linear-gradient(90deg,#18c3e6 0 5px,transparent 5px 8px)}"
+                 ".trend-sw:first-of-type{margin-left:0}")
     body = (
         "<div class='stats'>"
-        f"<div class='pill {reg_class}'><span class='n'>{regressions}</span>"
-        f"<span class='l'>regression{'' if regressions == 1 else 's'}</span></div>"
-        f"<div class='pill'><span class='n'>{tolerance:.0f}%</span>"
-        "<span class='l'>p95 tolerance</span></div>"
-        f"<div class='pill'><span class='n'>{success_drop_pp:.0f}pp</span>"
-        "<span class='l'>success-drop tolerance</span></div>"
+        f"<div class='pill {reg_class}'><span class='n'>{failures}</span>"
+        f"<span class='l'>failure{'' if failures == 1 else 's'}</span></div>"
+        f"<div class='pill'><span class='n'>{len(rows)}</span><span class='l'>metrics</span></div>"
         "</div>"
-        "<p class='legend'>Fixed-rate, sub-saturation load baseline &mdash; not a "
-        "rigorous benchmark, and not peak throughput. Each metric holds a "
-        "constant rate below its endpoint's ceiling: 1 warmup run (discarded) "
-        "+ 2 timed runs, sampled at a fixed interval. A metric is flagged if "
-        "its <b>median p95 latency</b> rose past tolerance, or its "
-        "<b>success rate</b> dropped past tolerance &mdash; single-VM smoke, "
-        "not a certified number.</p>"
-        "<p class='legend'><span class='trend-sw before'></span>before"
+        "<p class='legend'>Fixed-rate, sub-saturation load baseline &mdash; not peak "
+        "throughput, not a rigorous benchmark. Each metric holds a constant rate below "
+        "its endpoint's ceiling (1 warmup discarded + 2 timed runs). <b>Verdict = p95 "
+        "within its absolute SLA</b> (a generous, host-agnostic ceiling); metrics with "
+        "meaningful (tens-of-ms) latency &mdash; php, mysql &mdash; also fail on a "
+        f"before/after p95 rise &gt; {tolerance:.0f}%, and any metric fails on a success-rate "
+        f"drop &gt; {success_drop_pp:.0f}pp. Sub-millisecond metrics (nginx static) are SLA-only "
+        "&mdash; their before/after % is noise, shown as <span class='num-info'>info</span>.</p>"
+        "<p class='legend'><span class='trend-sw'></span>before"
         "<span class='trend-sw after'></span>after"
         "&mdash; p95 latency (ms) per sample window across both timed runs.</p>"
-        "<section class='card'><h2>Before / after &mdash; p50/p95 latency &amp; trend</h2>"
-        "<table><thead><tr><th>Metric</th><th class='num'>P50 before</th>"
-        "<th class='num'>P50 after</th><th class='num'>P95 before</th>"
-        "<th class='num'>P95 after</th><th class='num'>&Delta; (p95)</th>"
-        "<th class='num'>Success before</th><th class='num'>Success after</th>"
+        "<section class='card'><h2>Before / after &mdash; p95 latency vs SLA</h2>"
+        "<table><thead><tr><th>Metric</th><th class='num'>P95 before</th>"
+        "<th class='num'>P95 after</th><th class='num'>SLA p95 (ms)</th>"
+        "<th class='num'>&Delta; p95</th><th class='num'>Success</th>"
         "<th>Verdict</th><th>Trend (p95)</th>"
         f"</tr></thead><tbody>{''.join(trows)}</tbody></table></section>")
-    extra_css += (".trend-sw{display:inline-block;width:16px;height:2px;vertical-align:middle;"
-                  "margin:0 .3rem 0 .8rem;background:#16324f}"
-                  ".trend-sw.after{background:repeating-linear-gradient(90deg,#18c3e6 0 5px,transparent 5px 8px)}"
-                  ".trend-sw:first-of-type{margin-left:0}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        page("Load baseline", "Fixed sub-saturation rate + latency, before / after patching",
+        page("Load baseline", "Fixed sub-saturation rate + p95 latency vs SLA, before / after",
              body, "scan/bench_compare.py", extra_css),
         encoding="utf-8")
 
@@ -260,10 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--html", type=Path, default=Path("results/bench.html"),
                         help="self-contained HTML report (default: results/bench.html)")
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE_PCT,
-                        help=f"allowed p95 drift in %% before flagging a regression (default: {DEFAULT_TOLERANCE_PCT})")
+                        help=f"relative p95 rise %% flagged for large-latency metrics (default: {DEFAULT_TOLERANCE_PCT})")
     parser.add_argument("--success-drop-pp", type=float, default=DEFAULT_SUCCESS_DROP_PP,
-                        help="allowed success-rate drop in percentage points before flagging a "
-                             f"regression (default: {DEFAULT_SUCCESS_DROP_PP})")
+                        help=f"success-rate drop in pp flagged for any metric (default: {DEFAULT_SUCCESS_DROP_PP})")
     return parser
 
 
@@ -279,16 +310,15 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         print("bench: no matching host/metric pairs between before and after", file=sys.stderr)
         return 1
-    print(f"Load baseline comparison (smoke-level, fixed-rate, median-p95-driven, "
-          f"tolerance {args.tolerance:.0f}% / success drop {args.success_drop_pp:.0f}pp):\n")
+    print("Load baseline (fixed-rate, p95 vs SLA; relative check for php/mysql):\n")
     print_table(rows)
     write_html_report(rows, args.tolerance, args.success_drop_pp, args.html)
-    regressions = sum(1 for r in rows if r["verdict"] == "REGRESSION")
+    failures = sum(1 for r in rows if r["verdict"] == "FAIL")
     print()
-    if regressions:
-        print(f"bench: {regressions} metric(s) outside tolerance -- see ⚠ REGRESSION above")
+    if failures:
+        print(f"bench: {failures} metric(s) FAILED -- see above")
     else:
-        print("bench: no significant regression detected")
+        print("bench: all metrics within SLA, no significant regression")
     print(f"  HTML: {args.html}")
     return 0
 

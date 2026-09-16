@@ -9,6 +9,16 @@ what a student/user of the stand sees and uses.
 
 ## [Unreleased]
 
+### Changed
+- `make bench-delta` verdict is now hybrid: an absolute p95 **SLA** per metric
+  (a generous, host-agnostic ceiling) is the primary gate, so a sub-millisecond
+  endpoint like static nginx — where a 0.2 ms wobble reads as 20% — is judged
+  "still under its SLA" rather than by a noisy before/after %. Metrics with
+  meaningful latency (php, mysql) additionally fail on a real p95 rise past
+  tolerance; any metric fails on a success-rate drop. The before/after % is
+  shown as `(info)` for SLA-only metrics. Report gained an "SLA p95" column and
+  a failure reason.
+
 ## [1.1.0] - 2026-09-16
 
 ### Changed
