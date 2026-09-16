@@ -10,6 +10,16 @@ what a student/user of the stand sees and uses.
 ## [Unreleased]
 
 ### Added
+- `make patch-plan` now links Ubuntu packages to their **USN** security
+  advisories, closing the gap with the Oracle side (which already carried ELSA
+  IDs from `dnf updateinfo`). apt package indices carry no advisory metadata,
+  so the plan enriches each pending Ubuntu package from Canonical's live Ubuntu
+  Security Notices feed (`notices.json`, filtered to the release), matching the
+  USN that shipped the package's **exact** fixed version — no stale advisories.
+  Best-effort: any network/API failure just leaves advisories empty, the frozen
+  package plan is unaffected. Verified live on Ubuntu 26.04 (resolute): 122 of
+  126 pending packages linked; the report's advisory column and counters now
+  populate for both OS families.
 - `make rollback` — the change-management counter-action to `make rollout`.
   `rollout` now takes an online VM snapshot of the prod hosts (`make snapshot`,
   `pre-rollout`) before it changes anything; `make rollback` reverts them to it.

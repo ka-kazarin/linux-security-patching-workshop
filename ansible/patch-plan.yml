@@ -153,10 +153,59 @@
     - name: Parse per-host plan data and write the manifest JSON
       ansible.builtin.shell: |
         python3 -c "
-        import glob, json, os
+        import glob, json, os, time, urllib.request
         from datetime import datetime, timezone
 
+        # Ubuntu apt package indices carry NO advisory metadata -- unlike dnf's
+        # updateinfo, which hands the Oracle side its ELSA IDs for free. So for
+        # Ubuntu we enrich the pending packages from Canonical's live Ubuntu
+        # Security Notices feed (notices.json), matching each pending package
+        # to the USN that shipped its EXACT fixed version -- no stale USNs.
+        # Best-effort and symmetric with the Oracle ELSA linkage: any
+        # network/API failure just leaves advisories empty (an honest '--',
+        # same as Oracle when updateinfo has no entry), the frozen package plan
+        # itself is never affected.
+        CODENAMES = {'26.04': 'resolute', '24.04': 'noble', '22.04': 'jammy'}
+
+        def usn_map(codename):
+            base = 'https://ubuntu.com/security/notices.json'
+            # limit=20 is the API's hard maximum -- anything larger 422s (and
+            # the except below would then swallow it into an empty map), so page
+            # through in 20s; the offset<5000 cap is just a runaway guard.
+            found, offset, limit = {}, 0, 20
+            while offset < 5000:
+                url = (base + '?release=' + codename + '&order=newest'
+                       + '&limit=' + str(limit) + '&offset=' + str(offset))
+                # Paging through ~18 requests, a single transient read timeout
+                # shouldn't wipe every advisory -- retry a few times, and only
+                # give up (keeping whatever we already gathered) if a page is
+                # truly unreachable.
+                data = None
+                for attempt in range(4):
+                    try:
+                        with urllib.request.urlopen(url, timeout=20) as resp:
+                            data = json.load(resp)
+                        break
+                    except Exception:
+                        time.sleep(1.5)
+                if data is None:
+                    break
+                notices = data.get('notices', [])
+                for n in notices:
+                    usn = n.get('id')
+                    if not usn:
+                        continue
+                    for p in n.get('release_packages', {}).get(codename, []):
+                        key = (p.get('name'), p.get('version'))
+                        if key[0] and key[1]:
+                            found.setdefault(key, set()).add(usn)
+                offset += len(notices)
+                if not notices or offset >= data.get('total_results', 0):
+                    break
+            return found
+
         hosts = {}
+        debian_hosts = []
         for path in sorted(glob.glob('/tmp/stand-patch-plan/*.txt')):
             host = os.path.basename(path)[:-4]
             lines = open(path, encoding='utf-8').read().splitlines()
@@ -198,11 +247,14 @@
                     if pkg['name'] in advisories:
                         pkg['advisories'] = sorted(advisories[pkg['name']])
             else:
-                # Debian/Ubuntu: plain 'name version' lines.
+                # Debian/Ubuntu: plain 'name version' lines. USN advisories
+                # get attached after the loop (apt gives no advisory IDs
+                # inline, so it can't be done per-line here like Oracle).
                 for line in body:
                     parts = line.split()
                     if len(parts) == 2:
                         packages.append({'name': parts[0], 'version': parts[1]})
+                debian_hosts.append(host)
             hosts[host] = {
                 'os': os_label,
                 'packages': packages,
@@ -211,6 +263,24 @@
                     'advisories': sum(len(p.get('advisories', [])) for p in packages),
                 },
             }
+
+        # Enrich Ubuntu hosts with USN advisories now that every host is
+        # parsed -- one feed fetch covers them all (the stand's Ubuntu hosts
+        # share one release). This runs on the controller, which has the
+        # network the plan is generated from; the Oracle advisories were
+        # already resolved on their own host by dnf.
+        if debian_hosts:
+            ver = next((hosts[h]['os'].split()[1] for h in debian_hosts
+                        if len(hosts[h]['os'].split()) > 1), '')
+            code = CODENAMES.get(ver[:5])
+            umap = usn_map(code) if code else {}
+            for h in debian_hosts:
+                for pkg in hosts[h]['packages']:
+                    adv = sorted(umap.get((pkg['name'], pkg['version']), ()))
+                    if adv:
+                        pkg['advisories'] = adv
+                hosts[h]['counts']['advisories'] = sum(
+                    len(p.get('advisories', [])) for p in hosts[h]['packages'])
 
         manifest = {
             'env': '{{ env | default('stage') }}',

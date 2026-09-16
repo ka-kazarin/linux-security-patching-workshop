@@ -50,7 +50,11 @@ imported and never touches the network. Link to the images: _to be added_.
    target — then test that same plan on stage. Between freezing the plan and
    rolling it out, a plain `apt/dnf upgrade` can pull in a *different* set (new
    updates land on the mirror in between) — the manifest is what makes "prod
-   gets exactly what was tested" true rather than aspirational.
+   gets exactly what was tested" true rather than aspirational. Each package is
+   also linked to the security advisory that fixed its exact version — ELSA on
+   Oracle (from `dnf updateinfo`, in the repo metadata) and USN on Ubuntu
+   (apt carries no advisory metadata, so the plan enriches from Canonical's
+   live Ubuntu Security Notices feed) — and both show up in the HTML report.
 3. `make patch ENV=stage` — patch OS/middleware on **stage** via Ansible, to
    test the plan. Installs the frozen manifest's exact versions when it exists,
    otherwise falls back to "whatever the security pocket currently serves" (and
