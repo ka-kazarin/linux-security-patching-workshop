@@ -27,11 +27,16 @@ from pathlib import Path
 from change_log_append import LOG_PATH, SEED_PATH, ensure_log
 from report_style import page
 
+# Human-readable calendar labels, keyed by the raw action string the Makefile
+# targets record. Deliberately decoupled from the target/action names: a label
+# should read as *what changed* ("kernel"), not the mechanism ("reboot"), and
+# name the layer ("OS patch") once "kernel"/"WordPress" sit next to it. The
+# action string (and the evt-<action> CSS class) stays the target name.
 ACTION_LABELS = {
-    "patch": "patch",
+    "patch": "OS patch",
     "rollout": "rollout",
-    "patch-wordpress": "wordpress",
-    "patch-reboot": "reboot",
+    "patch-wordpress": "WordPress",
+    "patch-reboot": "kernel",
     "rollback": "rollback",
 }
 
