@@ -116,14 +116,37 @@ install_trivy() {
 	/usr/local/bin/trivy image --download-db-only >/dev/null 2>&1 || true
 }
 
+# Pinned static binary (Go, no distro packaging) for the HTTP load baseline
+# (bench.yml) -- replaces wrk. wrk can only hammer at peak throughput; vegeta
+# holds a fixed sub-saturation rate (-rate=N) and reports p50/p95 latency at
+# that rate, which is the point of the fixed-rate-not-peak-throughput
+# methodology (docs/en README + ansible/bench.yml). Same cross-distro
+# approach as node_exporter above.
+install_vegeta() {
+	if command -v vegeta >/dev/null 2>&1; then
+		return
+	fi
+	local version="12.13.0"  # latest release, verified live against
+	# https://api.github.com/repos/tsenart/vegeta/releases/latest
+	local arch
+	arch="$(uname -m)"
+	case "$arch" in
+		x86_64) arch="amd64" ;;
+		aarch64) arch="arm64" ;;
+		*) echo "common: unsupported arch $arch for vegeta" >&2; return 1 ;;
+	esac
+	local tarball="vegeta_${version}_linux_${arch}.tar.gz"
+	curl -fsSL "https://github.com/tsenart/vegeta/releases/download/v${version}/${tarball}" -o "/tmp/${tarball}"
+	tar -xzf "/tmp/${tarball}" -C /tmp vegeta
+	install -m 0755 /tmp/vegeta /usr/local/bin/vegeta
+	rm -f "/tmp/${tarball}" /tmp/vegeta
+}
+
 case "$(hostname)" in
 	web-*)
 		install_trivy
-		if ! command -v wrk >/dev/null 2>&1; then   # web load baseline (bench.yml)
-			export DEBIAN_FRONTEND=noninteractive
-			apt-get install -y wrk || true
-		fi
-		echo "common: pre-installed trivy + wrk (web)"
+		install_vegeta   # HTTP load baseline (bench.yml)
+		echo "common: pre-installed trivy + vegeta (web)"
 		;;
 	db-*)
 		install_trivy

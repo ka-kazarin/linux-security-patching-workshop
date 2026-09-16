@@ -1,48 +1,70 @@
 ---
 # Load baseline for "did the patch slow anything down" -- NOT a rigorous
-# benchmark. Methodology: per metric, 1 warmup run (discarded -- absorbs a
-# cold OS disk cache / first-hit compile so it can't masquerade as a
-# regression) + 2 timed runs. Each timed run is sampled at a fixed interval,
-# producing a throughput+latency time series; median and p90 are computed
-# across every sample from BOTH timed runs. Durations are Makefile-driven
-# (BENCH_WARMUP/BENCH_DURATION/BENCH_RUNS/BENCH_INTERVAL -e overrides) so the
-# boring, slow, honest defaults below don't need editing to try something
-# short.
+# benchmark, and NOT peak-throughput. Methodology: fixed sub-saturation
+# rate + latency. A rate below each endpoint's ceiling is held constant
+# (vegeta -rate=N / sysbench --rate=N); what's measured is whether p95
+# latency at that steady rate held up, not how much throughput was
+# squeezed out. Peak-throughput numbers on a shared, single-core-starved
+# demo VM swing wildly run to run (±30-56%, measured live) because they
+# chase whatever the VM's noisy-neighbour scheduling allows *this second*;
+# latency at a rate safely under the ceiling barely moves, because the
+# server was never queueing in the first place.
+#
+# Per metric: 1 warmup run (discarded -- absorbs cold PHP-FPM/opcache /
+# OS disk cache so it can't masquerade as a regression) + BENCH_RUNS timed
+# runs. Each timed run is sampled at a fixed interval by re-running the
+# tool in short windows, one sample per window. Median p95 (+ success
+# rate) across every sample from BOTH timed runs drives the before/after
+# verdict (scan/bench_compare.py); p50 rides along for context wherever
+# the tool exposes it. Durations are Makefile-driven
+# (BENCH_WARMUP/BENCH_DURATION/BENCH_RUNS/BENCH_INTERVAL -e overrides).
+#
+# Stage only, hard-coded: bench-before/after measure "did patching THIS
+# host slow THIS host down" -- there is no cross-env comparison, unlike
+# scan (whose delta is per-env by design). Running against prod as well
+# would just add VM-suspend churn for a number nobody diffs.
 #
 # Tools -- one per layer (AGENTS.md "one tool per step"):
-#  - web host (nginx static file + WordPress PHP page): wrk. It has no
-#    built-in interval reporting, so a timed run IS a sequence of short wrk
-#    windows (wrk -d<interval>s); each window is one sample (Requests/sec +
-#    wrk's own p50 latency).
-#  - db host (MySQL): sysbench oltp_read_only, installed via EPEL. Its own
+#  - web host (nginx static file + WordPress PHP page): vegeta, a single
+#    Go binary. No built-in interval reporting, so a timed run IS a
+#    sequence of short vegeta windows (attack -rate=R -duration=<interval>s
+#    | report -type=json); each window's JSON report is one sample
+#    (p50/p95 latency + success rate at the held rate). Rates are picked
+#    BELOW each endpoint's ceiling (verified live against this stand's
+#    web-stage): the static file nginx serves directly has no meaningful
+#    ceiling on this VM (500 req/s stays sub-millisecond), the WordPress
+#    home page (PHP-FPM + MySQL) caps out near ~25 req/s at wrk -c10, so
+#    10 req/s keeps it warm without ever queueing (p95 ~85-90ms, stable
+#    across back-to-back runs after warmup).
+#  - db host (MySQL): sysbench oltp_read_only --rate=N (EPEL package),
+#    rate-limited well under its own read-only ceiling. Its own
 #    --report-interval windows the run for us -- one sysbench process per
-#    timed run, printing one sample line per interval (tps + p95 latency).
-#    (Verified live on Oracle Linux 9.6: `dnf install -y epel-release
-#    sysbench` resolves and installs cleanly -- no mysqlslap fallback
-#    needed here.)
+#    timed run, printing one sample line per interval (tps + the tool's
+#    own p95 latency + err/s, from which the sample's success rate is
+#    derived).
 #
-# Vars: env=stage|prod (default stage), out=path without extension
-# (default results/bench-{{ env }}) -- .json gets appended.
+# Vars: out=path without extension (default results/bench) -- .json gets
+# appended.
 - name: Reset bench workspace on the controller
   hosts: localhost
   connection: local
   gather_facts: false
   tasks:
-    # Same reasoning as ansible/scan.yml: a workspace scoped to one env
-    # must not pick up raw output a previous, wider run left behind.
+    # A workspace scoped to this run must not pick up raw output a
+    # previous run left behind.
     - name: Clear per-host raw output left over from a previous run
       ansible.builtin.file:
         path: /tmp/stand-bench
         state: "{{ item }}"
       loop: [absent, directory]
 
-- name: Benchmark hosts ({{ env | default('stage') }})
-  hosts: "{{ env | default('stage') }}"
+- name: Benchmark hosts (stage, fixed sub-saturation rate + latency)
+  hosts: stage
   become: true
   vars:
     # Methodology knobs -- overridden from the Makefile via -e bench_*.
-    bench_warmup: 60      # seconds, one run, discarded
-    bench_duration: 180   # seconds per timed run
+    bench_warmup: 20      # seconds, one run, discarded
+    bench_duration: 60    # seconds per timed run
     bench_runs: 2         # timed runs per metric
     bench_interval: 10    # seconds per sample window
     # Static file nginx serves directly (not routed through PHP-FPM) --
@@ -50,67 +72,84 @@
     # ships this file, and nginx's `try_files` in nginx-wordpress.conf hands
     # a plain file straight back without touching index.php.
     static_path: /wp-includes/js/wp-embed.min.js
-    wrk_threads: 2
-    wrk_connections: 10
+    # Fixed rates, each verified live to sit below its endpoint's ceiling so
+    # success stays ~100% and latency stays flat instead of climbing under
+    # queueing -- see the file header for the numbers behind these picks.
+    vegeta_static_rate: 500   # req/s, nginx static file
+    vegeta_php_rate: 10       # req/s, WordPress home page (PHP-FPM + MySQL)
+    vegeta_version: "12.13.0"  # latest release, verified live against
+    # https://api.github.com/repos/tsenart/vegeta/releases/latest
     sysbench_tables: 2
     sysbench_table_size: 10000
     sysbench_threads: 4
+    mysql_rate: 200            # tps, sysbench oltp_read_only --rate
   tasks:
     # --- web host: nginx (static) + PHP-FPM+MySQL (WordPress home) --------
-    - name: Install wrk (web hosts only)
-      ansible.builtin.apt:
-        name: wrk
-        state: present
-        update_cache: true
+    - name: Install vegeta (web hosts only, idempotent safety net -- common.sh pre-installs it)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        case "$(uname -m)" in
+          x86_64) arch=amd64 ;;
+          aarch64) arch=arm64 ;;
+          *) echo "bench: unsupported arch $(uname -m) for vegeta" >&2; exit 1 ;;
+        esac
+        curl -fsSL "https://github.com/tsenart/vegeta/releases/download/v{{ vegeta_version }}/vegeta_{{ vegeta_version }}_linux_${arch}.tar.gz" \
+          | tar -xz -C /tmp vegeta
+        install -m 0755 /tmp/vegeta /usr/local/bin/vegeta
+        rm -f /tmp/vegeta
+      args:
+        creates: /usr/local/bin/vegeta
       when: "'web' in group_names"
 
-    - name: Warmup + timed runs against a real static file served by nginx
+    - name: Warmup + timed windows against a real static file served by nginx (vegeta, fixed rate)
       ansible.builtin.shell: |
         set -euo pipefail
         URL="http://localhost{{ static_path }}"
-        echo "### warmup"
-        wrk -d{{ bench_warmup }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL" >/dev/null
+        RATE={{ vegeta_static_rate }}
+        echo "### warmup (discarded)" >&2
+        echo "GET $URL" | vegeta attack -rate=$RATE -duration={{ bench_warmup }}s > /dev/null
         windows=$(( {{ bench_duration }} / {{ bench_interval }} ))
         for run in $(seq 1 {{ bench_runs }}); do
-          echo "### run $run"
+          echo "### run $run" >&2
           for w in $(seq 1 "$windows"); do
-            echo "### window t=$(( (w - 1) * {{ bench_interval }} ))"
-            wrk -d{{ bench_interval }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL"
+            echo "### window t=$(( (w - 1) * {{ bench_interval }} ))" >&2
+            echo "GET $URL" | vegeta attack -rate=$RATE -duration={{ bench_interval }}s | vegeta report -type=json
           done
         done
-      register: wrk_static_result
+      register: vegeta_static_result
       changed_when: false
       when: "'web' in group_names"
 
-    - name: Save raw wrk (nginx-static) output for the controller to parse
+    - name: Save raw vegeta (nginx-static) output for the controller to parse
       ansible.builtin.copy:
-        content: "{{ wrk_static_result.stdout }}"
+        content: "RATE={{ vegeta_static_rate }}\n{{ vegeta_static_result.stdout }}"
         dest: /tmp/stand-bench/{{ inventory_hostname }}-nginx-static.txt
       delegate_to: localhost
       become: false
       when: "'web' in group_names"
 
-    - name: Warmup + timed runs against the WordPress home page (PHP-FPM + MySQL)
+    - name: Warmup + timed windows against the WordPress home page (vegeta, fixed rate)
       ansible.builtin.shell: |
         set -euo pipefail
         URL="http://localhost/"
-        echo "### warmup"
-        wrk -d{{ bench_warmup }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL" >/dev/null
+        RATE={{ vegeta_php_rate }}
+        echo "### warmup (discarded)" >&2
+        echo "GET $URL" | vegeta attack -rate=$RATE -duration={{ bench_warmup }}s > /dev/null
         windows=$(( {{ bench_duration }} / {{ bench_interval }} ))
         for run in $(seq 1 {{ bench_runs }}); do
-          echo "### run $run"
+          echo "### run $run" >&2
           for w in $(seq 1 "$windows"); do
-            echo "### window t=$(( (w - 1) * {{ bench_interval }} ))"
-            wrk -d{{ bench_interval }}s -t{{ wrk_threads }} -c{{ wrk_connections }} --latency "$URL"
+            echo "### window t=$(( (w - 1) * {{ bench_interval }} ))" >&2
+            echo "GET $URL" | vegeta attack -rate=$RATE -duration={{ bench_interval }}s | vegeta report -type=json
           done
         done
-      register: wrk_php_result
+      register: vegeta_php_result
       changed_when: false
       when: "'web' in group_names"
 
-    - name: Save raw wrk (php) output for the controller to parse
+    - name: Save raw vegeta (php) output for the controller to parse
       ansible.builtin.copy:
-        content: "{{ wrk_php_result.stdout }}"
+        content: "RATE={{ vegeta_php_rate }}\n{{ vegeta_php_result.stdout }}"
         dest: /tmp/stand-bench/{{ inventory_hostname }}-php.txt
       delegate_to: localhost
       become: false
@@ -159,10 +198,10 @@
         (sysbench_table_check.stdout | default('0') | trim) == '0'
       changed_when: true
 
-    - name: Warmup + timed runs of sysbench oltp_read_only (db hosts only)
+    - name: Warmup + timed runs of sysbench oltp_read_only (db hosts only, fixed rate)
       ansible.builtin.shell: |
         set -euo pipefail
-        ARGS="--db-driver=mysql --mysql-user=root --mysql-db=sbtest --mysql-socket=/var/lib/mysql/mysql.sock --tables={{ sysbench_tables }} --table-size={{ sysbench_table_size }} --threads={{ sysbench_threads }}"
+        ARGS="--db-driver=mysql --mysql-user=root --mysql-db=sbtest --mysql-socket=/var/lib/mysql/mysql.sock --tables={{ sysbench_tables }} --table-size={{ sysbench_table_size }} --threads={{ sysbench_threads }} --rate={{ mysql_rate }}"
         echo "### warmup"
         sysbench oltp_read_only $ARGS --time={{ bench_warmup }} run >/dev/null
         for run in $(seq 1 {{ bench_runs }}); do
@@ -175,7 +214,7 @@
 
     - name: Save raw sysbench output for the controller to parse
       ansible.builtin.copy:
-        content: "{{ sysbench_result.stdout }}"
+        content: "RATE={{ mysql_rate }}\n{{ sysbench_result.stdout }}"
         dest: /tmp/stand-bench/{{ inventory_hostname }}-mysql.txt
       delegate_to: localhost
       become: false
@@ -189,64 +228,48 @@
     # Same cwd caveat as scan.yml: connection: local runs with cwd =
     # ansible/, not wherever ansible-playbook was invoked from.
     repo_root: "{{ playbook_dir }}/.."
-    out_base: "{{ repo_root }}/{{ out | default('results/bench-' + (env | default('stage'))) }}"
+    out_base: "{{ repo_root }}/{{ out | default('results/bench') }}"
     bench_interval: 10
   tasks:
-    - name: Parse raw wrk/sysbench output into the bench JSON schema (samples + median/p90)
+    - name: Parse raw vegeta/sysbench output into the bench JSON schema (samples + median p95/success)
       ansible.builtin.shell: |
         python3 -c "
-        import glob, json, math, re, statistics
+        import glob, json, re, statistics
 
         BENCH_INTERVAL = {{ bench_interval }}
-        UNIT_TO_MS = {'us': 0.001, 'ms': 1.0, 's': 1000.0}
 
         def chunks_of(text):
             # Every marker line starts with '### '; prefixing a newline lets
             # one split cleanly return every marker+body as its own chunk.
             return [c for c in ('\n' + text).split('\n### ') if c.strip()]
 
-        def percentile(values, pct):
-            # Linear-interpolation method (numpy's default) -- stdlib has no
-            # percentile before 3.13's statistics.quantiles(), and this repo
-            # targets an older 3.x runtime (rules/python.md).
-            s = sorted(values)
-            k = (len(s) - 1) * (pct / 100)
-            f, c = math.floor(k), math.ceil(k)
-            if f == c:
-                return s[int(k)]
-            return s[f] * (c - k) + s[c] * (k - f)
-
-        def parse_wrk(text, name):
-            # wrk has no built-in interval reporting: a timed run IS a
-            # sequence of short windows (wrk -d<interval>s), each window one
-            # sample. Latency per sample is wrk's own p50 for that window --
-            # the aggregate p90 below is then p90 across those per-window
-            # medians, a second read on tail behaviour distinct from any
-            # single window's own p90.
+        def parse_vegeta(text, name):
+            # Every line of raw output is one 'vegeta report -type=json'
+            # object -- one per short window. Warmup output is silenced with
+            # '>/dev/null' in the shell task, so there is nothing to skip
+            # here, unlike the marker-based sysbench text below.
             samples = []
-            for chunk in chunks_of(text):
-                marker, _, body = chunk.partition('\n')
-                marker = marker.strip()
-                if marker.startswith('warmup') or marker.startswith('run '):
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
                     continue
-                if not marker.startswith('window t='):
-                    raise SystemExit(f'bench: unexpected wrk marker {marker!r} in {name}')
-                rps = re.search(r'Requests/sec:\s+([0-9.]+)', body)
-                lat = re.search(r'^\s*50%\s+([0-9.]+)(us|ms|s)\b', body, re.MULTILINE)
-                if not rps or not lat:
-                    raise SystemExit(f'bench: could not parse wrk window in {name} ({marker})')
+                report = json.loads(line)
+                lat = report['latencies']
                 samples.append({
-                    'throughput': float(rps.group(1)),
-                    'latency_ms': float(lat.group(1)) * UNIT_TO_MS[lat.group(2)],
+                    'p50_ms': lat['50th'] / 1e6,
+                    'p95_ms': lat['95th'] / 1e6,
+                    'success': report['success'],
                 })
             if not samples:
-                raise SystemExit(f'bench: no wrk samples parsed from {name}')
+                raise SystemExit(f'bench: no vegeta samples parsed from {name}')
             return samples
 
         def parse_sysbench(text, name):
             # sysbench's own --report-interval already windows the run for
             # us: one process per timed run, one '[ Ns ]' line per sample
-            # (tps + p95 latency, the tool's own default for that line).
+            # (tps + its own p95 latency + err/s). p50 isn't exposed by the
+            # periodic line, so sysbench samples carry p95 only -- p50_ms is
+            # None and the compare script shows '-' for it.
             samples = []
             for chunk in chunks_of(text):
                 marker, _, body = chunk.partition('\n')
@@ -255,8 +278,15 @@
                     continue
                 if not marker.startswith('run '):
                     raise SystemExit(f'bench: unexpected sysbench marker {marker!r} in {name}')
-                for m in re.finditer(r'tps:\s+([0-9.]+).*?lat \(ms,\d+%\):\s+([0-9.]+)', body):
-                    samples.append({'throughput': float(m.group(1)), 'latency_ms': float(m.group(2))})
+                for m in re.finditer(
+                        r'tps:\s+([0-9.]+).*?lat \(ms,\d+%\):\s+([0-9.]+).*?err/s:\s+([0-9.]+)', body):
+                    tps, p95, err = float(m.group(1)), float(m.group(2)), float(m.group(3))
+                    total = tps + err
+                    samples.append({
+                        'p50_ms': None,
+                        'p95_ms': p95,
+                        'success': 1.0 if total == 0 else max(0.0, min(1.0, tps / total)),
+                    })
             if not samples:
                 raise SystemExit(f'bench: no sysbench samples parsed from {name}')
             return samples
@@ -265,16 +295,23 @@
         for path in sorted(glob.glob('/tmp/stand-bench/*.txt')):
             name = path.rsplit('/', 1)[-1][:-4]  # <host>-<metric>
             text = open(path, encoding='utf-8').read()
+            first_line, _, body = text.partition('\n')
+            rate_match = re.match(r'RATE=([0-9.]+)', first_line)
+            if not rate_match:
+                raise SystemExit(f'bench: missing RATE= header in {path}')
+            rate = float(rate_match.group(1))
+            rate = int(rate) if rate.is_integer() else rate
+
             if name.endswith('-nginx-static') or name.endswith('-php'):
                 metric = 'nginx-static' if name.endswith('-nginx-static') else 'php'
                 host = name[: -len('-' + metric)]
-                tool = 'wrk'
-                samples = parse_wrk(text, name)
+                tool = 'vegeta'
+                samples = parse_vegeta(body, name)
             elif name.endswith('-mysql'):
                 metric = 'mysql'
                 host = name[: -len('-mysql')]
                 tool = 'sysbench'
-                samples = parse_sysbench(text, name)
+                samples = parse_sysbench(body, name)
             else:
                 raise SystemExit(f'bench: unrecognised raw file {path}')
 
@@ -283,16 +320,18 @@
             for i, s in enumerate(samples):
                 s['t'] = i * BENCH_INTERVAL
 
-            throughput = [s['throughput'] for s in samples]
-            latency = [s['latency_ms'] for s in samples]
-            entries.append({
-                'host': host, 'metric': metric, 'tool': tool,
+            p50s = [s['p50_ms'] for s in samples if s['p50_ms'] is not None]
+            p95s = [s['p95_ms'] for s in samples]
+            successes = [s['success'] for s in samples]
+            entry = {
+                'host': host, 'metric': metric, 'tool': tool, 'rate': rate,
                 'samples': samples,
-                'median_throughput': round(statistics.median(throughput), 2),
-                'p90_throughput': round(percentile(throughput, 90), 2),
-                'median_latency': round(statistics.median(latency), 3),
-                'p90_latency': round(percentile(latency, 90), 3),
-            })
+                'median_p95': round(statistics.median(p95s), 3),
+                'median_success': round(statistics.median(successes), 4),
+            }
+            if p50s:
+                entry['median_p50'] = round(statistics.median(p50s), 3)
+            entries.append(entry)
 
         entries.sort(key=lambda e: (e['host'], e['metric']))
         json.dump(entries, open('{{ out_base }}.json', 'w'), indent=2)

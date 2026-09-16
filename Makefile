@@ -21,18 +21,49 @@ ENV ?= stage
 SEVERITY ?= CRITICAL,HIGH,MEDIUM,LOW
 # Command to run through the wp2shell-poc shell (make attack-shell).
 CMD ?= id
-# Load-baseline methodology (make bench-before/bench-after): 1 warmup run
-# (discarded) + BENCH_RUNS timed runs of BENCH_DURATION seconds each, sampled
-# every BENCH_INTERVAL seconds. The web host runs nginx then php sequentially
-# and each timed run is a sequence of short wrk windows (per-window startup
-# adds up), so wall time is more than the raw seconds suggest. 20 + 2*60s
-# lands the whole thing under ~8 min (measured); still 12 samples/metric for
-# a usable median/p90. Override for a quick mechanics check, e.g.
-# BENCH_DURATION=20 BENCH_WARMUP=10.
+# Load-baseline methodology (make bench-before/bench-after): fixed
+# sub-saturation rate + latency (vegeta on web, sysbench --rate on db), NOT
+# peak throughput -- a rate held under each endpoint's ceiling keeps the
+# service from ever queueing, so p95 latency barely drifts between two
+# otherwise-identical runs. 1 warmup run (discarded) + BENCH_RUNS timed runs
+# of BENCH_DURATION seconds each, sampled every BENCH_INTERVAL seconds. The
+# web host runs nginx-static then php sequentially and each timed run is a
+# sequence of short vegeta windows (per-window startup adds up), so wall time
+# is more than the raw seconds suggest. 20 + 2*60s lands the whole thing
+# under ~8 min (measured); still 12 samples/metric for a usable median.
+# Override for a quick mechanics check, e.g. BENCH_DURATION=20 BENCH_WARMUP=10.
+# Stage only -- bench-before/after/delta always target web-stage/db-stage,
+# no ENV parameter (unlike scan/patch/verify).
 BENCH_WARMUP   ?= 20
 BENCH_DURATION ?= 60
 BENCH_RUNS     ?= 2
 BENCH_INTERVAL ?= 10
+
+# VMs paused for the duration of a bench run to remove CPU contention on the
+# host (mon + prod share the same physical cores as web-stage/db-stage under
+# the full profile). Each suspend/resume is best-effort per VM: under the
+# lite profile prod doesn't exist, and the loop must not fail the whole
+# target over a VM that was never up.
+BENCH_NEIGHBORS := mon web-prod db-prod
+define pause_bench_neighbors
+	cd $(STAND_DIR) && for vm in $(BENCH_NEIGHBORS); do vagrant suspend "$$vm" >/dev/null 2>&1 || true; done
+endef
+# Plain `vagrant resume` is the happy path; VirtualBox occasionally corrupts
+# a saved state into "aborted-saved" (observed live on this host resuming
+# several suspended VMs back to back) where resume itself always fails --
+# the only way out is discarding the saved state and booting fresh
+# (`vagrant up` self-heals a stopped/aborted VM; disk state survives, only
+# in-RAM state is lost, same as a hard power cycle). Best-effort throughout:
+# a VM this run never suspended (lite profile has no prod) is silently a
+# no-op.
+define resume_bench_neighbors
+	cd $(STAND_DIR) && for vm in $(BENCH_NEIGHBORS); do \
+		vagrant resume "$$vm" >/dev/null 2>&1 && continue; \
+		vbox_id=$$(VBoxManage list vms 2>/dev/null | grep "\"stand_$${vm}_" | grep -o '{[a-f0-9-]*}' | tr -d '{}'); \
+		[ -n "$$vbox_id" ] && VBoxManage discardstate "$$vbox_id" >/dev/null 2>&1; \
+		vagrant up "$$vm" >/dev/null 2>&1 || true; \
+	done
+endef
 
 STAND_DIR   := stand
 INVENTORY   := ansible/inventory.yml
@@ -85,7 +116,8 @@ help: banner ## show this help
 		awk 'BEGIN{FS=":.*?## "}{printf "  $(GREEN)%-14s$(NC) %s\n", $$1, $$2}'
 	@printf "\nVariables: $(BOLD)ENV=stage|prod$(NC) (default: stage) -- scan-before/scan-after also "
 	@printf "accept $(BOLD)ENV=all$(NC); $(BOLD)SEVERITY=CRIT,HIGH,...$(NC) for scan (default: $(SEVERITY))\n"
-	@printf "$(BOLD)BENCH_WARMUP/BENCH_DURATION/BENCH_RUNS/BENCH_INTERVAL$(NC) for bench-before/bench-after "
+	@printf "$(BOLD)bench-before/bench-after/bench-delta$(NC) are stage-only (no ENV) and pause mon/prod "
+	@printf "VMs for the run; $(BOLD)BENCH_WARMUP/BENCH_DURATION/BENCH_RUNS/BENCH_INTERVAL$(NC) tune them "
 	@printf "(default: warmup=$(BENCH_WARMUP)s, $(BENCH_RUNS)x$(BENCH_DURATION)s runs, sampled every $(BENCH_INTERVAL)s -- a full bench run is slow by design)\n"
 	@printf "Start with $(BOLD)make doctor$(NC), then $(BOLD)make scan-delta$(NC) — both work without a stand.\n\n"
 
@@ -144,18 +176,31 @@ clean-results: ## remove generated demo artifacts under results (keeps README.md
 
 # --- Load baseline (smoke-level, not a rigorous benchmark) ---------------------
 # Slow by design: warmup + BENCH_RUNS timed runs per metric, see BENCH_* above.
+# Stage-only (web-stage/db-stage) -- mon/web-prod/db-prod are paused for the
+# run to remove CPU contention on the host, then resumed unconditionally
+# (even if the bench run itself fails, via the shell `;`/`$$?` below -- a
+# `&&` chain would leave the neighbors suspended on any bench failure).
 
-bench-before: ## load baseline BEFORE patching (warmup+2 timed runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
-	$(call check_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-before-$(ENV) -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
+bench-before: ## load baseline BEFORE patching (fixed rate + p95 latency, vegeta+sysbench on stage via Ansible; pauses mon/prod VMs)
+	@printf "$(YELLOW)→ running:$(NC) %s\n" 'cd $(STAND_DIR) && vagrant suspend $(BENCH_NEIGHBORS) (best-effort)'
+	@$(pause_bench_neighbors)
+	@printf "$(YELLOW)→ running:$(NC) %s\n" 'ansible-playbook -i $(INVENTORY) ansible/bench.yml -e out=results/bench-before -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL)'
+	@ansible-playbook -i $(INVENTORY) ansible/bench.yml -e out=results/bench-before -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL); ret=$$?; \
+	printf "$(YELLOW)→ running:$(NC) %s\n" 'cd $(STAND_DIR) && vagrant resume $(BENCH_NEIGHBORS)'; \
+	$(resume_bench_neighbors); \
+	exit $$ret
 
-bench-after: ## load baseline AFTER patching (warmup+2 timed runs, wrk+sysbench on the live VMs via Ansible, ENV=stage|prod)
-	$(call check_env)
-	$(call run,ansible-playbook -i $(INVENTORY) ansible/bench.yml -e env=$(ENV) -e out=results/bench-after-$(ENV) -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL))
+bench-after: ## load baseline AFTER patching (fixed rate + p95 latency, vegeta+sysbench on stage via Ansible; pauses mon/prod VMs)
+	@printf "$(YELLOW)→ running:$(NC) %s\n" 'cd $(STAND_DIR) && vagrant suspend $(BENCH_NEIGHBORS) (best-effort)'
+	@$(pause_bench_neighbors)
+	@printf "$(YELLOW)→ running:$(NC) %s\n" 'ansible-playbook -i $(INVENTORY) ansible/bench.yml -e out=results/bench-after -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL)'
+	@ansible-playbook -i $(INVENTORY) ansible/bench.yml -e out=results/bench-after -e bench_warmup=$(BENCH_WARMUP) -e bench_duration=$(BENCH_DURATION) -e bench_runs=$(BENCH_RUNS) -e bench_interval=$(BENCH_INTERVAL); ret=$$?; \
+	printf "$(YELLOW)→ running:$(NC) %s\n" 'cd $(STAND_DIR) && vagrant resume $(BENCH_NEIGHBORS)'; \
+	$(resume_bench_neighbors); \
+	exit $$ret
 
-bench-delta: ## compare the load baseline for ENV -> before/after/delta table + HTML report (median+p90, sparklines), flags regressions (ENV=stage|prod)
-	$(call check_env)
-	$(call run,python3 scan/bench_compare.py --before results/bench-before-$(ENV).json --after results/bench-after-$(ENV).json --html results/bench-$(ENV).html)
+bench-delta: ## compare the stage load baseline -> before/after/delta table + HTML report (median p95 latency + success rate, sparklines), flags regressions
+	$(call run,python3 scan/bench_compare.py --before results/bench-before.json --after results/bench-after.json --html results/bench.html)
 
 # --- Patching and verification (Ansible + pytest) ------------------------------
 

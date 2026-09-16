@@ -9,9 +9,35 @@ what a student/user of the stand sees and uses.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-16
+
 ### Changed
+- Load baseline (`make bench-before/after/delta`) switched from
+  peak-throughput to **fixed sub-saturation rate + latency**: `vegeta`
+  (replacing `wrk`) holds a constant rate below each web endpoint's ceiling
+  (nginx static file, WordPress home page) and `sysbench oltp_read_only`
+  gets a `--rate=N` cap on the db host, instead of both tools being let rip
+  at whatever throughput the VM's noisy-neighbour scheduling allowed that
+  second. A rate under the ceiling means the service never queues, so
+  **median p95 latency** (+ success rate) is what drives the before/after
+  verdict now — throughput numbers swung ±30-56% between two back-to-back
+  runs with nothing patched in between; verified live with the same
+  back-to-back protocol (`make bench-before` immediately followed by
+  `make bench-after`, no patch applied), p95 drift landed at -1.8%
+  (MySQL, 200 tps), -2.6% (WordPress home page, 10 req/s), and -21.1%
+  (nginx static file, 500 req/s) — the static-file figure looks larger in
+  percent terms only because its absolute p95 is sub-millisecond
+  (1.05ms → 0.83ms), well inside the tolerance below. `make bench-before/after/delta` are now **stage-only** (no
+  `ENV=`) and pause `mon`/`web-prod`/`db-prod` for the run's duration
+  (`vagrant suspend`/`resume`, best-effort, self-heals a VirtualBox
+  saved-state that fails to resume by discarding it and rebooting the VM)
+  to remove host CPU contention from the measurement; output files dropped
+  their env suffix (`results/bench-before.json`, `results/bench-after.json`,
+  `results/bench.html`). `scan/bench_compare.py` and `results/bench.html`
+  now show p50/p95 latency and success rate per metric instead of
+  throughput+p90.
 - Provisioning pre-installs the scan/bench tools (Trivy + its vulnerability DB
-  on web/db, `wrk` on web, `sysbench` via EPEL on db — `stand/provision/common.sh`,
+  on web/db, `vegeta` on web, `sysbench` via EPEL on db — `stand/provision/common.sh`,
   scoped by host role) so the cost lands in `make up` (run ahead of the demo),
   not on the webinar clock. `scan.yml`/`bench.yml` keep their idempotent
   installs as a safety net. Live `make scan-before` dropped from ~1:28 to ~31s.
