@@ -6,6 +6,13 @@
 - name: Patch OS and middleware ({{ env | default('stage') }})
   hosts: "{{ env | default('stage') }}"
   become: true
+  # All-or-nothing across the env's hosts: if one host is unreachable or a
+  # task fails, abort the whole play instead of patching the survivors. Caught
+  # live during a rollout -- web-prod was down at gather-facts, and without
+  # this ansible went on to patch db-prod, leaving prod half-patched (web on
+  # the old versions, db on the new). A rollout must be consistent or not
+  # happen at all; the caller (make rollout) then stops the chain on failure.
+  any_errors_fatal: true
   vars:
     # Frozen manifest from `make patch-plan` (ansible/patch-plan.yml, see its
     # header). One shared file, no env suffix: the plan is collected against
@@ -19,6 +26,10 @@
         name: unattended-upgrades
         state: present
         update_cache: true
+      register: apt_uu_install
+      until: apt_uu_install is succeeded
+      retries: 3
+      delay: 5
       when: ansible_facts['os_family'] == "Debian"
 
     # The stock 50unattended-upgrades ships the BARE "${distro_id}:${distro_codename}"
@@ -96,6 +107,10 @@
         name: "{{ patch_plan_pkgs | map(attribute='name') | zip(patch_plan_pkgs | map(attribute='version')) | map('join', '=') | list }}"
         state: present
         allow_downgrade: true
+      register: apt_pinned
+      until: apt_pinned is succeeded
+      retries: 3
+      delay: 5
       when:
         - ansible_facts['os_family'] == "Debian"
         - patch_plan_pkgs | length > 0
@@ -103,6 +118,9 @@
     - name: Apply security updates only (Debian/Ubuntu, apt -security pocket)
       ansible.builtin.command: unattended-upgrade -v
       register: uu_result
+      until: uu_result is succeeded
+      retries: 3
+      delay: 5
       changed_when: "'Packages that will be upgraded:' in uu_result.stdout and uu_result.stdout.split('Packages that will be upgraded:')[1].split('\\n')[0].strip() != ''"
       when:
         - ansible_facts['os_family'] == "Debian"
@@ -113,6 +131,10 @@
         name: "{{ patch_plan_pkgs | map(attribute='name') | zip(patch_plan_pkgs | map(attribute='version')) | map('join', '-') | list }}"
         state: present
         allow_downgrade: true
+      register: dnf_pinned
+      until: dnf_pinned is succeeded
+      retries: 3
+      delay: 5
       when:
         - ansible_facts['os_family'] == "RedHat"
         - patch_plan_pkgs | length > 0
@@ -124,6 +146,9 @@
     - name: Apply security updates only (Oracle Linux, dnf upgrade --security)
       ansible.builtin.command: dnf upgrade --security -y
       register: dnf_security
+      until: dnf_security is succeeded
+      retries: 3
+      delay: 5
       changed_when: "'Nothing to do' not in dnf_security.stdout"
       when:
         - ansible_facts['os_family'] == "RedHat"
@@ -151,6 +176,10 @@
       ansible.builtin.apt:
         name: needrestart
         state: present
+      register: apt_needrestart
+      until: apt_needrestart is succeeded
+      retries: 3
+      delay: 5
       when: ansible_facts['os_family'] == "Debian"
 
     # needrestart < 3.8 has known local-root vulnerabilities (CVE-2024-48990,
@@ -180,6 +209,10 @@
       ansible.builtin.dnf:
         name: dnf-utils
         state: present
+      register: dnf_utils
+      until: dnf_utils is succeeded
+      retries: 3
+      delay: 5
       when: ansible_facts['os_family'] == "RedHat"
 
     - name: Check whether services/kernel need a restart (Oracle Linux, report-only)

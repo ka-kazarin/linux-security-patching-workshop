@@ -23,6 +23,9 @@
       ansible.builtin.command: >
         sudo -u www-data wp core update --version={{ wp_fixed_version }} --path={{ wp_root }}
       register: wp_update
+      until: wp_update is succeeded
+      retries: 3
+      delay: 5
       changed_when: "'is up to date' not in wp_update.stdout"
 
     - name: Show wp-cli output

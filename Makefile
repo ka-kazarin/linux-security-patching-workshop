@@ -44,7 +44,7 @@ BENCH_INTERVAL ?= 10
 # the full profile). Each suspend/resume is best-effort per VM: under the
 # lite profile prod doesn't exist, and the loop must not fail the whole
 # target over a VM that was never up.
-BENCH_NEIGHBORS := mon web-prod db-prod
+BENCH_NEIGHBORS := web-prod db-prod
 define pause_bench_neighbors
 	cd $(STAND_DIR) && for vm in $(BENCH_NEIGHBORS); do vagrant suspend "$$vm" >/dev/null 2>&1 || true; done
 endef
@@ -265,6 +265,18 @@ endif
 # results/patch-plan.json, so no -e override is needed here.
 rollout: ## roll out the frozen patch-plan to prod: patch -> patch-wordpress -> patch-reboot -> verify (hard env=prod, needs a patch-plan tested on stage first)
 	@test -f results/patch-plan.json || { printf "$(RED)✗ no frozen patch-plan (results/patch-plan.json) -- run 'make patch-plan ENV=prod', test it via 'make patch ENV=stage' + 'make verify ENV=stage', then retry$(NC)\n" >&2; exit 1; }
+	@printf "$(YELLOW)→ preflight:$(NC) ensuring prod hosts are up and reachable before snapshot/patch...\n"
+	@cd $(STAND_DIR) && vagrant up $(ROLLOUT_HOSTS) >/dev/null 2>&1 || true
+	@n=0; until ansible -i $(INVENTORY) prod -m ping >/dev/null 2>&1; do \
+		n=$$((n+1)); \
+		if [ $$n -ge 6 ]; then \
+			printf "$(RED)✗ a prod host stayed unreachable after 5 retries -- inspect it (cd $(STAND_DIR); vagrant status; vagrant reload <host>) and retry rollout. Nothing was snapshotted or patched.$(NC)\n" >&2; \
+			exit 1; \
+		fi; \
+		printf "  prod not reachable yet — retry %s/5 in 10s...\n" "$$n"; \
+		sleep 10; \
+	done
+	@printf "$(GREEN)✓ prod hosts reachable$(NC)\n"
 	$(MAKE) snapshot
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch.yml -e env=prod)
 	$(call run,ansible-playbook -i $(INVENTORY) ansible/patch-wordpress.yml -e env=prod)

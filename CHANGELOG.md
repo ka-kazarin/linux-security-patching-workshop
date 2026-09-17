@@ -56,6 +56,22 @@ what a student/user of the stand sees and uses.
   tolerance; any metric fails on a success-rate drop. The before/after % is
   shown as `(info)` for SLA-only metrics. Report gained an "SLA p95" column and
   a failure reason.
+- `make rollout` is resilient to transient network/host hiccups instead of
+  failing (or, worse, half-patching prod). Three layers: (1) a **pre-flight**
+  brings the prod hosts up (`vagrant up`) and waits for SSH to answer, with
+  retries, *before* it snapshots or patches — so a host that's briefly down no
+  longer leaves you with a snapshot and a half-applied rollout; (2) **retries**
+  on transient failures — SSH reconnection (`ansible.cfg`) for connection
+  drops, and per-task `retries: 3` on every mirror-touching apt/dnf/wp
+  operation for a flaky mirror mid-run; (3) `any_errors_fatal` on the patch and
+  reboot-cleanup plays as the backstop — if a failure survives the retries,
+  the whole play aborts rather than patching only the reachable host.
+
+### Fixed
+- A rollout no longer patches the reachable prod host while another is
+  unreachable (caught live: web-prod was down at gather-facts, db-prod got
+  patched anyway, leaving prod on mixed versions). See the `any_errors_fatal` /
+  pre-flight / retry work above.
 
 ## [1.1.0] - 2026-09-16
 

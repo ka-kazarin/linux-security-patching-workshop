@@ -18,6 +18,9 @@
 - name: Reboot and clean up old kernel packages ({{ env | default('stage') }})
   hosts: "{{ env | default('stage') }}"
   become: true
+  # Same all-or-nothing rule as patch.yml: don't reboot/clean up one prod host
+  # if the other is unreachable -- keep the env consistent.
+  any_errors_fatal: true
   tasks:
     - name: Reboot
       ansible.builtin.reboot:
