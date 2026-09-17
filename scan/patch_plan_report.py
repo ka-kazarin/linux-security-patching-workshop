@@ -72,17 +72,27 @@ def write_html_report(manifest: dict, path: Path) -> None:
     hosts = manifest.get("hosts", {})
     total_packages = sum(h.get("counts", {}).get("packages", 0) for h in hosts.values())
     total_advisories = sum(h.get("counts", {}).get("advisories", 0) for h in hosts.values())
-    extra_css = ".sub-os{font-weight:400;color:var(--muted);font-size:.82rem}"
+    extra_css = (
+        ".sub-os{font-weight:400;color:var(--muted);font-size:.82rem}"
+        # Fixed column geometry so both OSes render identically: without this,
+        # auto-layout lets Oracle's long comma-joined ELSA lists blow out the
+        # Advisory column and cram Package/Version against the left edge, while
+        # Ubuntu's single short USN spreads evenly. Fixed shares + wrapping in
+        # the advisory column keep the table full-width and consistent.
+        ".host table{table-layout:fixed}"
+        ".host td{vertical-align:top;overflow-wrap:anywhere}"
+        ".host th:nth-child(1),.host td:nth-child(1){width:34%}"
+        ".host th:nth-child(2),.host td:nth-child(2){width:28%}"
+        ".host th:nth-child(3),.host td:nth-child(3){width:38%}"
+    )
     body = (
         "<div class='stats'>"
         f"<div class='pill'><span class='n'>{total_packages}</span><span class='l'>packages</span></div>"
         f"<div class='pill'><span class='n'>{total_advisories}</span><span class='l'>advisories</span></div>"
         f"<div class='pill'><span class='n'>{len(hosts)}</span><span class='l'>hosts</span></div>"
         "</div>"
-        "<p class='legend'>Frozen security-update plan — computed, not installed. "
-        "<code>make patch ENV=...</code> installs exactly these package/version "
-        "pairs when this manifest exists; a host with zero pending packages is "
-        "already up to date, not a bug.</p>"
+        "<p class='legend'>Frozen plan — computed, not installed. A host with "
+        "zero pending packages is already up to date.</p>"
         + "".join(_host_section(host, data) for host, data in sorted(hosts.items()))
     )
     path.parent.mkdir(parents=True, exist_ok=True)

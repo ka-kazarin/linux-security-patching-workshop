@@ -212,16 +212,11 @@ def write_html_chart(before: dict[str, int], after: dict[str, int],
         f"<div class='pill remaining'><span class='n'>{remaining}</span><span class='l'>remaining</span></div>"
         f"<div class='pill new'><span class='n'>{new}</span><span class='l'>new</span></div>"
         "</div>"
-        "<p class='legend'>"
-        "<b>fixed</b> gone after patching &middot; <b>remaining</b> still open "
-        "&middot; <b>new</b> present only in the after-scan (a package the patch "
-        "pulled in at a newer version, carrying its own advisories &mdash; not a "
-        "vulnerability the patch created).</p>"
-        "<p class='legend'>"
-        "<span class='sw'></span>before"
-        "<span class='sw after'></span>after"
-        "&mdash; each severity shows two bars (before solid, after translucent), "
-        "also marked B / A.</p>"
+        "<p class='legend'><b>new</b> = present only in the after-scan &mdash; a "
+        "package upgraded to a newer version brought its own advisories, not a "
+        "regression the patch caused.</p>"
+        "<p class='legend'><span class='sw'></span>before"
+        "<span class='sw after'></span>after &mdash; two bars per severity (B / A).</p>"
         + _chart_section("Overall — all hosts", before, after, "card overall")
         + f"<div class='host-grid'>{per_host_sections}</div>")
     path.parent.mkdir(parents=True, exist_ok=True)

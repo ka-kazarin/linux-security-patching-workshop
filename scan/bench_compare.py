@@ -261,17 +261,8 @@ def write_html_report(rows: list[dict], tolerance: float, success_drop_pp: float
         f"<span class='l'>failure{'' if failures == 1 else 's'}</span></div>"
         f"<div class='pill'><span class='n'>{len(rows)}</span><span class='l'>metrics</span></div>"
         "</div>"
-        "<p class='legend'>Fixed-rate, sub-saturation load baseline &mdash; not peak "
-        "throughput, not a rigorous benchmark. Each metric holds a constant rate below "
-        "its endpoint's ceiling (1 warmup discarded + 2 timed runs). <b>Verdict = p95 "
-        "within its absolute SLA</b> (a generous, host-agnostic ceiling); metrics with "
-        "meaningful (tens-of-ms) latency &mdash; php, mysql &mdash; also fail on a "
-        f"before/after p95 rise &gt; {tolerance:.0f}%, and any metric fails on a success-rate "
-        f"drop &gt; {success_drop_pp:.0f}pp. Sub-millisecond metrics (nginx static) are SLA-only "
-        "&mdash; their before/after % is noise, shown as <span class='num-info'>info</span>.</p>"
         "<p class='legend'><span class='trend-sw'></span>before"
-        "<span class='trend-sw after'></span>after"
-        "&mdash; p95 latency (ms) per sample window across both timed runs.</p>"
+        "<span class='trend-sw after'></span>after &mdash; p95 (ms) per window.</p>"
         "<section class='card'><h2>Before / after &mdash; p95 latency vs SLA</h2>"
         "<table><thead><tr><th>Metric</th><th class='num'>P95 before</th>"
         "<th class='num'>P95 after</th><th class='num'>SLA p95 (ms)</th>"
@@ -280,7 +271,7 @@ def write_html_report(rows: list[dict], tolerance: float, success_drop_pp: float
         f"</tr></thead><tbody>{''.join(trows)}</tbody></table></section>")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        page("Load baseline", "Fixed sub-saturation rate + p95 latency vs SLA, before / after",
+        page("Load baseline", "p95 latency vs SLA — before / after",
              body, "scan/bench_compare.py", extra_css),
         encoding="utf-8")
 
