@@ -48,6 +48,10 @@ what a student/user of the stand sees and uses.
   regenerable report.
 
 ### Changed
+- Docs no longer point at an external Google Sheets registry (never built). The
+  findings registry is `results/delta-<env>.csv` (from `make scan-delta`) — the
+  same owner/severity/status/SLA columns, in-repo. READMEs, exercises, and
+  `scan/delta.py` wording updated accordingly.
 - `make bench-delta` verdict is now hybrid: an absolute p95 **SLA** per metric
   (a generous, host-agnostic ceiling) is the primary gate, so a sub-millisecond
   endpoint like static nginx — where a 0.2 ms wobble reads as 20% — is judged
@@ -146,9 +150,9 @@ what a student/user of the stand sees and uses.
   top-level `results/` (`docs/` is now purely textual, `results/` is a
   self-describing name instead of the "why is it called fallback"
   question). `make clean-fallback` renamed `make clean-results` to match.
-- `scan/delta.py` + sample scans — delta between two Trivy reports → CSV
-  (matches the `Registry` sheet) and an HTML/SVG chart; runs without trivy
-  installed locally.
+- `scan/delta.py` + sample scans — delta between two Trivy reports → a
+  registry-style CSV and an HTML/SVG chart; runs without trivy installed
+  locally.
 - `tests/` (pytest): unit tests for `scan/delta.py` + smoke tests against the
   stand (`make verify` — services still answer after a patch, green before and
   after); HTML report via pytest-html. Deliberately no test that re-verifies

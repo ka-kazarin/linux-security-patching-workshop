@@ -2,8 +2,8 @@
 """Compute the delta between two Trivy JSON reports.
 
 Reads a "before" and an "after" Trivy report, classifies every finding as
-fixed / new / remaining, writes a CSV compatible with the ``Registry`` sheet of
-the Google Sheets template, and renders a self-contained HTML bar chart
+fixed / new / remaining, writes a registry-style CSV (one row per finding with
+owner/SLA triage columns), and renders a self-contained HTML bar chart
 (inline SVG, no binary artifacts, no third-party deps).
 
 Runs on the standard library only. Invoked from the Makefile ``delta`` target.
@@ -23,7 +23,7 @@ from report_style import PALETTE, page
 # Severity order, most severe first. Anything else buckets into UNKNOWN.
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 
-# Registry sheet header. delta.py fills what it can infer; the rest is left
+# Registry CSV header. delta.py fills what it can infer; the rest is left
 # blank for manual triage.
 REGISTRY_HEADER = [
     "CVE", "Layer", "Host", "Owner", "CVSS", "EPSS", "KEV", "Severity",
@@ -115,8 +115,8 @@ def classify(before: dict, after: dict) -> list[dict]:
 
 
 def write_registry_csv(rows: list[dict], path: Path) -> None:
-    """Write rows in the Registry sheet layout; blanks stay for manual triage."""
-    # Trivy status -> Registry status: a gone finding is closed, everything else open.
+    """Write rows in the registry CSV layout; blanks stay for manual triage."""
+    # Trivy status -> registry status: a gone finding is closed, everything else open.
     status_map = {"fixed": "closed", "new": "open", "remaining": "open"}
     today = date.today().isoformat()
     path.parent.mkdir(parents=True, exist_ok=True)

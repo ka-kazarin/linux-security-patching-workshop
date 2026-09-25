@@ -82,10 +82,12 @@ record to `results/change-log.jsonl` — what was patched, where, when, and by
 whom, a CMDB/change-management stand-in. `make change-log` renders it as a
 searchable HTML calendar (`results/change-log.html`).
 
-## Findings registry (Google Sheets)
+## Findings registry
 
-The live vulnerability registry lives in a Google Sheets template (outside
-this repo): _link to be added_.
+The scan delta doubles as a findings registry: `make scan-delta` writes
+`results/delta-<env>.csv` — one row per finding with its layer, owner,
+severity, status (open/closed), discovery date, and SLA columns, ready for
+triage.
 
 ## Documentation
 

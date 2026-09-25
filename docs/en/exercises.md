@@ -25,10 +25,10 @@ it doesn't *close*.
 
 ## 3. A finding in the registry: owner and SLA
 
-Add a fresh finding from a Trivy report to the `Registry` sheet (Google Sheets
-template). Set the layer, owner (infra/DBA/dev), severity, discovery date, and
-target SLA deadline per the `SLA` matrix. Use the formula to determine whether
-it's overdue.
+Open `results/delta-<env>.csv` (the findings registry `make scan-delta` writes).
+Pick a finding and fill in the blank triage columns: layer, owner
+(infra/DBA/dev), severity, discovery date, and a target SLA deadline (e.g.
+critical 72 h, high 7 days). Work out whether it's overdue.
 
 ## 4. The stage → prod pipeline: why verify matters
 
